@@ -151,6 +151,35 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   process.exit(1);
 }
 
+// ================== SAFE REPLY FUNCTION ==================
+async function safeReply(interaction, content, options = {}) {
+  try {
+    if (interaction.replied) {
+      return await interaction.followUp({ 
+        content, 
+        flags: 64, 
+        ephemeral: true,
+        ...options 
+      });
+    } else if (interaction.deferred) {
+      return await interaction.editReply({ 
+        content,
+        ...options 
+      });
+    } else {
+      return await interaction.reply({ 
+        content, 
+        flags: 64,
+        ephemeral: true,
+        ...options 
+      });
+    }
+  } catch (error) {
+    console.error("❌ Error in safeReply:", error);
+  }
+}
+
+
 // ================== OPTIMIZED FUNCTIONS ==================
 
 // Функция проверки прав администратора
@@ -1619,6 +1648,9 @@ async function handleStartVoteModal(interaction) {
 }
 
 async function handleSpeakerModal(interaction) {
+  // ПРОВЕРКА: если уже ответили, выходим
+  if (interaction.replied || interaction.deferred) return;
+  
   const pid = interaction.customId.split("speaker_modal_")[1];
   const typeInput = interaction.fields.getTextInputValue("speaker_type");
   
@@ -1636,32 +1668,34 @@ async function handleSpeakerModal(interaction) {
     displayName = 'участник прений';
   }
   
-  // Проверяем, не зарегистрирован ли уже пользователь
-  const existingSpeakers = await db.getSpeakers(pid);
-  const alreadyRegistered = existingSpeakers.find(s => s.userid === interaction.user.id);
-  
-  if (alreadyRegistered) {
-    // Если уже зарегистрирован, обновляем тип
-    await db.removeSpeaker(pid, interaction.user.id);
+  try {
+    // Проверяем, не зарегистрирован ли уже пользователь
+    const existingSpeakers = await db.getSpeakers(pid);
+    const alreadyRegistered = existingSpeakers.find(s => s.userid === interaction.user.id);
+    
+    if (alreadyRegistered) {
+      // Если уже зарегистрирован, обновляем тип
+      await db.removeSpeaker(pid, interaction.user.id);
+    }
+    
+    const speaker = {
+      proposalId: pid,
+      userId: interaction.user.id,
+      type: speakerType,
+      displayName: displayName,
+      registeredAt: Date.now()
+    };
+    
+    await db.addSpeaker(speaker);
+    
+    // Обновляем сообщение со списком выступающих
+    await updateSpeakersMessage(pid);
+    
+    await safeReply(interaction, `✅ Вы зарегистрированы как **${displayName}** для выступления по этой инициативе.`);
+  } catch (error) {
+    console.error("❌ Error in speaker modal:", error);
+    await safeReply(interaction, "❌ Ошибка при регистрации выступающего.");
   }
-  
-  const speaker = {
-    proposalId: pid,
-    userId: interaction.user.id,
-    type: speakerType,
-    displayName: displayName,
-    registeredAt: Date.now()
-  };
-  
-  await db.addSpeaker(speaker);
-  
-  // Обновляем сообщение со списком выступающих
-  await updateSpeakersMessage(pid);
-  
-  await interaction.reply({ 
-    content: `✅ Вы зарегистрированы как **${displayName}** для выступления по этой инициативе.`, 
-    flags: 64 
-  });
 }
 
 async function handleDeleteProposalModal(interaction) {
@@ -1981,20 +2015,28 @@ async function handleButton(interaction) {
 }
 
 async function handleGetCardButton(interaction) {
-  const meetingId = cid.split("get_card_")[1];
+  // ПРОВЕРКА: если уже ответили, выходим
+  if (interaction.replied || interaction.deferred) return;
+  
+  const meetingId = interaction.customId.split("get_card_")[1];
   const meeting = await db.getMeeting(meetingId);
   
   if (!meeting || !meeting.open) {
-    await interaction.reply({ content: "❌ Регистрация закрыта.", flags: 64 });
+    await safeReply(interaction, "❌ Регистрация закрыта.");
     return;
   }
   
-  // Только регистрируем пользователя, роль будет выдана позже если кворум собран
-  if (!await db.isUserRegistered(meetingId, interaction.user.id)) {
-    await db.registerForMeeting(meetingId, interaction.user.id);
+  try {
+    // Только регистрируем пользователя, роль будет выдана позже если кворум собран
+    if (!await db.isUserRegistered(meetingId, interaction.user.id)) {
+      await db.registerForMeeting(meetingId, interaction.user.id);
+    }
+    
+    await safeReply(interaction, "✅ Вы зарегистрированы! Роль для голосования будет выдана после завершения регистрации, если будет собран кворум.");
+  } catch (error) {
+    console.error("❌ Error in get card button:", error);
+    await safeReply(interaction, "❌ Ошибка при регистрации.");
   }
-  
-  await interaction.reply({ content: "✅ Вы зарегистрированы! Роль для голосования будет выдана после завершения регистрации, если будет собран кворум.", flags: 64 });
 }
 
 async function handleClearRolesButton(interaction) {
@@ -2740,163 +2782,181 @@ async function handlePresidentButtons(interaction) {
 }
 
 async function handleRegularVoteButtons(interaction) {
+  // ПРОВЕРКА: если уже ответили, выходим
+  if (interaction.replied || interaction.deferred) return;
+  
   const parts = interaction.customId.split("_");
   const kind = parts[1];
   const pid = parts.slice(2).join("_");
   
-  // Ищем активное заседание для соответствующей палаты
-  const proposal = await db.getProposal(pid);
-  if (!proposal) {
-    await interaction.reply({ content: "❌ Законопроект не найден.", flags: 64 });
-    return;
-  }
-  
-  // Ищем активное заседание для этой палаты
-  const activeMeetings = await db.getActiveMeetings();
-  const activeMeeting = activeMeetings.find(m => m.chamber === proposal.chamber);
-  
-  if (!activeMeeting) {
-    await interaction.reply({ content: "❌ Нет активного заседания для этой палаты.", flags: 64 });
-    return;
-  }
-  
-  const voterRoleId = VOTER_ROLES_BY_CHAMBER[activeMeeting.chamber];
-  const member = interaction.member;
-  if (!member.roles.cache.has(voterRoleId)) {
-    await interaction.reply({ content: "❌ У вас нет роли для голосования.", flags: 64 });
-    return;
-  }
-  
-  const voting = await db.getVoting(pid);
-  
-  if (!voting?.open) {
-    await interaction.reply({ content: "❌ Голосование не активно.", flags: 64 });
-    return;
-  }
-  
-  const vote = {
-    proposalId: pid,
-    userId: interaction.user.id,
-    voteType: kind,
-    createdAt: Date.now(),
-    stage: voting.stage || 1
-  };
-  
-  await db.addVote(vote);
+  try {
+    // Ищем активное заседание для соответствующей палаты
+    const proposal = await db.getProposal(pid);
+    if (!proposal) {
+      await safeReply(interaction, "❌ Законопроект не найден.");
+      return;
+    }
+    
+    // Ищем активное заседание для этой палаты
+    const activeMeetings = await db.getActiveMeetings();
+    const activeMeeting = activeMeetings.find(m => m.chamber === proposal.chamber);
+    
+    if (!activeMeeting) {
+      await safeReply(interaction, "❌ Нет активного заседания для этой палаты.");
+      return;
+    }
+    
+    const voterRoleId = VOTER_ROLES_BY_CHAMBER[activeMeeting.chamber];
+    const member = interaction.member;
+    if (!member.roles.cache.has(voterRoleId)) {
+      await safeReply(interaction, "❌ У вас нет роли для голосования.");
+      return;
+    }
+    
+    const voting = await db.getVoting(pid);
+    
+    if (!voting?.open) {
+      await safeReply(interaction, "❌ Голосование не активно.");
+      return;
+    }
+    
+    const vote = {
+      proposalId: pid,
+      userId: interaction.user.id,
+      voteType: kind,
+      createdAt: Date.now(),
+      stage: voting.stage || 1
+    };
+    
+    await db.addVote(vote);
 
-  await interaction.reply({ content: `✅ Ваш голос учтен`, flags: 64 });
+    await safeReply(interaction, `✅ Ваш голос учтен`);
+  } catch (error) {
+    console.error("❌ Error in regular vote button:", error);
+    await safeReply(interaction, "❌ Ошибка при голосовании.");
+  }
 }
 
 async function handleQuantitativeVoteButtons(interaction) {
+  // ПРОВЕРКА: если уже ответили, выходим
+  if (interaction.replied || interaction.deferred) return;
+  
   const parts = interaction.customId.split("_");
   const itemIndex = parts[2];
   const pid = parts.slice(3).join("_");
   
-  // Ищем активное заседание для соответствующей палаты
-  const proposal = await db.getProposal(pid);
-  if (!proposal) {
-    await interaction.reply({ content: "❌ Законопроект не найден.", flags: 64 });
-    return;
-  }
-  
-  // Ищем активное заседание для этой палаты
-  const activeMeetings = await db.getActiveMeetings();
-  const activeMeeting = activeMeetings.find(m => m.chamber === proposal.chamber);
-  
-  if (!activeMeeting) {
-    await interaction.reply({ content: "❌ Нет активного заседания для этой палаты.", flags: 64 });
-    return;
-  }
-  
-  const voterRoleId = VOTER_ROLES_BY_CHAMBER[activeMeeting.chamber];
-  const member = interaction.member;
-  if (!member.roles.cache.has(voterRoleId)) {
-    await interaction.reply({ content: "❌ У вас нет роли для голосования.", flags: 64 });
-    return;
-  }
-  
-  const voting = await db.getVoting(pid);
-  
-  if (!voting?.open) {
-    await interaction.reply({ content: "❌ Голосование не активнo.", flags: 64 });
-    return;
-  }
-  
-  // Проверяем, что это количественное голосование
-  if (!proposal.isquantitative) {
-    await interaction.reply({ content: "❌ Это не количественное голосование.", flags: 64 });
-    return;
-  }
-  
-  const vote = {
-    proposalId: pid,
-    userId: interaction.user.id,
-    voteType: `item_${itemIndex}`,
-    createdAt: Date.now(),
-    stage: voting.stage || 1
-  };
-  
-  await db.addVote(vote);
+  try {
+    // Ищем активное заседание для соответствующей палаты
+    const proposal = await db.getProposal(pid);
+    if (!proposal) {
+      await safeReply(interaction, "❌ Законопроект не найден.");
+      return;
+    }
+    
+    // Ищем активное заседание для этой палаты
+    const activeMeetings = await db.getActiveMeetings();
+    const activeMeeting = activeMeetings.find(m => m.chamber === proposal.chamber);
+    
+    if (!activeMeeting) {
+      await safeReply(interaction, "❌ Нет активного заседания для этой палаты.");
+      return;
+    }
+    
+    const voterRoleId = VOTER_ROLES_BY_CHAMBER[activeMeeting.chamber];
+    const member = interaction.member;
+    if (!member.roles.cache.has(voterRoleId)) {
+      await safeReply(interaction, "❌ У вас нет роли для голосования.");
+      return;
+    }
+    
+    const voting = await db.getVoting(pid);
+    
+    if (!voting?.open) {
+      await safeReply(interaction, "❌ Голосование не активно.");
+      return;
+    }
+    
+    // Проверяем, что это количественное голосование
+    if (!proposal.isquantitative) {
+      await safeReply(interaction, "❌ Это не количественное голосование.");
+      return;
+    }
+    
+    const vote = {
+      proposalId: pid,
+      userId: interaction.user.id,
+      voteType: `item_${itemIndex}`,
+      createdAt: Date.now(),
+      stage: voting.stage || 1
+    };
+    
+    await db.addVote(vote);
 
-  await interaction.reply({ 
-    content: `✅ Ваш голос учтен за пункт ${itemIndex}`, 
-    flags: 64 
-  });
+    await safeReply(interaction, `✅ Ваш голос учтен за пункт ${itemIndex}`);
+  } catch (error) {
+    console.error("❌ Error in quantitative vote button:", error);
+    await safeReply(interaction, "❌ Ошибка при голосовании.");
+  }
 }
 
 async function handleQuantitativeAbstainButton(interaction) {
+  // ПРОВЕРКА: если уже ответили, выходим
+  if (interaction.replied || interaction.deferred) return;
+  
   const pid = interaction.customId.split("vote_abstain_")[1];
   
-  // Ищем активное заседание для соответствующей палаты
-  const proposal = await db.getProposal(pid);
-  if (!proposal) {
-    await interaction.reply({ content: "❌ Законопроект не найден.", flags: 64 });
-    return;
-  }
-  
-  // Ищем активное заседание для этой палаты
-  const activeMeetings = await db.getActiveMeetings();
-  const activeMeeting = activeMeetings.find(m => m.chamber === proposal.chamber);
-  
-  if (!activeMeeting) {
-    await interaction.reply({ content: "❌ Нет активного заседания для этой палаты.", flags: 64 });
-    return;
-  }
-  
-  const voterRoleId = VOTER_ROLES_BY_CHAMBER[activeMeeting.chamber];
-  const member = interaction.member;
-  if (!member.roles.cache.has(voterRoleId)) {
-    await interaction.reply({ content: "❌ У вас нет роли для голосования.", flags: 64 });
-    return;
-  }
-  
-  const voting = await db.getVoting(pid);
-  
-  if (!voting?.open) {
-    await interaction.reply({ content: "❌ Голосование не активно.", flags: 64 });
-    return;
-  }
-  
-  // Проверяем, что это количественное голосование
-  if (!proposal.isquantitative) {
-    await interaction.reply({ content: "❌ Ошибка голосования (неверный тип).", flags: 64 });
-    return;
-  }
-  
-  const vote = {
-    proposalId: pid,
-    userId: interaction.user.id,
-    voteType: 'abstain',
-    createdAt: Date.now(),
-    stage: voting.stage || 1
-  };
-  
-  await db.addVote(vote);
+  try {
+    // Ищем активное заседание для соответствующей палаты
+    const proposal = await db.getProposal(pid);
+    if (!proposal) {
+      await safeReply(interaction, "❌ Законопроект не найден.");
+      return;
+    }
+    
+    // Ищем активное заседание для этой палаты
+    const activeMeetings = await db.getActiveMeetings();
+    const activeMeeting = activeMeetings.find(m => m.chamber === proposal.chamber);
+    
+    if (!activeMeeting) {
+      await safeReply(interaction, "❌ Нет активного заседания для этой палаты.");
+      return;
+    }
+    
+    const voterRoleId = VOTER_ROLES_BY_CHAMBER[activeMeeting.chamber];
+    const member = interaction.member;
+    if (!member.roles.cache.has(voterRoleId)) {
+      await safeReply(interaction, "❌ У вас нет роли для голосования.");
+      return;
+    }
+    
+    const voting = await db.getVoting(pid);
+    
+    if (!voting?.open) {
+      await safeReply(interaction, "❌ Голосование не активно.");
+      return;
+    }
+    
+    // Проверяем, что это количественное голосование
+    if (!proposal.isquantitative) {
+      await safeReply(interaction, "❌ Ошибка голосования (неверный тип).");
+      return;
+    }
+    
+    const vote = {
+      proposalId: pid,
+      userId: interaction.user.id,
+      voteType: 'abstain',
+      createdAt: Date.now(),
+      stage: voting.stage || 1
+    };
+    
+    await db.addVote(vote);
 
-  await interaction.reply({ 
-    content: `✅ Ваш голос учтен (воздержались)`, 
-    flags: 64 
-  });
+    await safeReply(interaction, `✅ Ваш голос учтен (воздержались)`);
+  } catch (error) {
+    console.error("❌ Error in quantitative abstain button:", error);
+    await safeReply(interaction, "❌ Ошибка при голосовании.");
+  }
 }
 
 // ================== TIMER RESTORATION ==================
@@ -2952,14 +3012,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
     
   } catch (err) {
     console.error("❌ Interaction error:", err);
+    
+    // УЛУЧШЕННАЯ ОБРАБОТКА ОШИБОК
     try {
-      if (interaction && !interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: "❌ Ошибка при обработке.", flags: 64 });
-      } else if (interaction && interaction.deferred) {
-        await interaction.editReply({ content: "❌ Ошибка при обработке." });
+      if (interaction.replied) {
+        console.log('🔄 Interaction already replied, using followUp');
+        await interaction.followUp({ 
+          content: "❌ Ошибка при обработке команды.", 
+          flags: 64,
+          ephemeral: true 
+        });
+      } else if (interaction.deferred) {
+        await interaction.editReply({ 
+          content: "❌ Ошибка при обработке команды." 
+        });
+      } else {
+        await interaction.reply({ 
+          content: "❌ Ошибка при обработке команды.", 
+          flags: 64,
+          ephemeral: true 
+        });
       }
     } catch (e2) {
       console.error("❌ Error sending error reply:", e2);
+      // Не делаем ничего - просто логируем
     }
   }
 });
