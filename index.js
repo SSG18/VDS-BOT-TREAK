@@ -152,6 +152,7 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
 }
 
 // ================== SAFE REPLY FUNCTION ==================
+// ================== SAFE REPLY FUNCTION ==================
 async function safeReply(interaction, content, options = {}) {
   try {
     let response;
@@ -174,17 +175,14 @@ async function safeReply(interaction, content, options = {}) {
       });
     }
     
-    // УДАЛЯЕМ ВСЕ EPHEMERAL СООБЩЕНИЯ ЧЕРЕЗ 15 СЕКУНД
+    // УДАЛЯЕМ ВСЕ EPHEMERAL СООБЩЕНИЯ ЧЕРЕЗ 5 СЕКУНД (уменьшено для скорости)
     setTimeout(async () => {
       try {
         await response.delete();
       } catch (error) {
-        // Игнорируем ошибки удаления (сообщение уже удалено или нет прав)
-        if (error.code !== 10008) { // Unknown Message
-          console.log("ℹ️ Could not delete ephemeral message");
-        }
+        // Игнорируем ошибки удаления
       }
-    }, 15000);
+    }, 5000);
     
     return response;
   } catch (error) {
@@ -2940,23 +2938,23 @@ async function handleRegularVoteButtons(interaction) {
   const pid = parts.slice(2).join("_");
   
   try {
-    // Ищем активное заседание для соответствующей палаты
+    // Ищем предложение
     const proposal = await db.getProposal(pid);
     if (!proposal) {
       await safeReply(interaction, "❌ Законопроект не найден.");
       return;
     }
     
-    // Ищем активное заседание для этой палаты
-    const activeMeetings = await db.getActiveMeetings();
-    const activeMeeting = activeMeetings.find(m => m.chamber === proposal.chamber);
+    // Ищем ЛЮБОЕ заседание для этой палаты (не только активное)
+    const allMeetings = await db.getAllMeetings();
+    const chamberMeeting = allMeetings.find(m => m.chamber === proposal.chamber && m.status === 'completed');
     
-    if (!activeMeeting) {
-      await safeReply(interaction, "❌ Нет активного заседания для этой палаты.");
+    if (!chamberMeeting) {
+      await safeReply(interaction, "❌ Не найдено завершенное заседание для этой палаты.");
       return;
     }
     
-    const voterRoleId = VOTER_ROLES_BY_CHAMBER[activeMeeting.chamber];
+    const voterRoleId = VOTER_ROLES_BY_CHAMBER[proposal.chamber];
     const member = interaction.member;
     if (!member.roles.cache.has(voterRoleId)) {
       await safeReply(interaction, "❌ У вас нет роли для голосования.");
@@ -2997,23 +2995,23 @@ async function handleQuantitativeVoteButtons(interaction) {
   const pid = parts.slice(3).join("_");
   
   try {
-    // Ищем активное заседание для соответствующей палаты
+    // Ищем предложение
     const proposal = await db.getProposal(pid);
     if (!proposal) {
       await safeReply(interaction, "❌ Законопроект не найден.");
       return;
     }
     
-    // Ищем активное заседание для этой палаты
-    const activeMeetings = await db.getActiveMeetings();
-    const activeMeeting = activeMeetings.find(m => m.chamber === proposal.chamber);
+    // Ищем ЛЮБОЕ заседание для этой палаты (не только активное)
+    const allMeetings = await db.getAllMeetings();
+    const chamberMeeting = allMeetings.find(m => m.chamber === proposal.chamber && m.status === 'completed');
     
-    if (!activeMeeting) {
-      await safeReply(interaction, "❌ Нет активного заседания для этой палаты.");
+    if (!chamberMeeting) {
+      await safeReply(interaction, "❌ Не найдено завершенное заседание для этой палаты.");
       return;
     }
     
-    const voterRoleId = VOTER_ROLES_BY_CHAMBER[activeMeeting.chamber];
+    const voterRoleId = VOTER_ROLES_BY_CHAMBER[proposal.chamber];
     const member = interaction.member;
     if (!member.roles.cache.has(voterRoleId)) {
       await safeReply(interaction, "❌ У вас нет роли для голосования.");
@@ -3057,23 +3055,23 @@ async function handleQuantitativeAbstainButton(interaction) {
   const pid = interaction.customId.split("vote_abstain_")[1];
   
   try {
-    // Ищем активное заседание для соответствующей палаты
+    // Ищем предложение
     const proposal = await db.getProposal(pid);
     if (!proposal) {
       await safeReply(interaction, "❌ Законопроект не найден.");
       return;
     }
     
-    // Ищем активное заседание для этой палаты
-    const activeMeetings = await db.getActiveMeetings();
-    const activeMeeting = activeMeetings.find(m => m.chamber === proposal.chamber);
+    // Ищем ЛЮБОЕ заседание для этой палаты (не только активное)
+    const allMeetings = await db.getAllMeetings();
+    const chamberMeeting = allMeetings.find(m => m.chamber === proposal.chamber && m.status === 'completed');
     
-    if (!activeMeeting) {
-      await safeReply(interaction, "❌ Нет активного заседания для этой палаты.");
+    if (!chamberMeeting) {
+      await safeReply(interaction, "❌ Не найдено завершенное заседание для этой палаты.");
       return;
     }
     
-    const voterRoleId = VOTER_ROLES_BY_CHAMBER[activeMeeting.chamber];
+    const voterRoleId = VOTER_ROLES_BY_CHAMBER[proposal.chamber];
     const member = interaction.member;
     if (!member.roles.cache.has(voterRoleId)) {
       await safeReply(interaction, "❌ У вас нет роли для голосования.");
