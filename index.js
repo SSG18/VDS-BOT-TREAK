@@ -154,26 +154,43 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
 // ================== SAFE REPLY FUNCTION ==================
 async function safeReply(interaction, content, options = {}) {
   try {
+    let response;
     if (interaction.replied) {
-      return await interaction.followUp({ 
+      response = await interaction.followUp({ 
         content, 
         flags: 64, 
         ephemeral: true,
         ...options 
       });
     } else if (interaction.deferred) {
-      return await interaction.editReply({ 
+      response = await interaction.editReply({ 
         content,
         ...options 
       });
     } else {
-      return await interaction.reply({ 
+      response = await interaction.reply({ 
         content, 
         flags: 64,
         ephemeral: true,
         ...options 
       });
     }
+    
+    // Автоматически удаляем ephemeral сообщение через 15 секунд
+    if (response && options.autoDelete !== false) {
+      setTimeout(async () => {
+        try {
+          await response.delete();
+        } catch (error) {
+          // Игнорируем ошибки удаления
+          if (error.code !== 10008) { // Unknown Message
+            console.log("ℹ️ Could not delete ephemeral message");
+          }
+        }
+      }, 15000);
+    }
+    
+    return response;
   } catch (error) {
     console.error("❌ Error in safeReply:", error);
   }
@@ -248,15 +265,25 @@ function formatTimeLeft(ms) {
 
 // Функция для форматирования времени с учетом часового пояса Москвы
 function formatMoscowTime(timestamp) {
-  return new Date(timestamp).toLocaleString("ru-RU", {
-    timeZone: "Europe/Moscow",
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  });
+  try {
+    // Убедимся, что timestamp является числом
+    const date = new Date(Number(timestamp));
+    if (isNaN(date.getTime())) {
+      return "Некорректная дата";
+    }
+    return date.toLocaleString("ru-RU", {
+      timeZone: "Europe/Moscow",
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  } catch (error) {
+    console.error("❌ Error formatting Moscow time:", error);
+    return "Ошибка формата даты";
+  }
 }
 
 // Функции для работы с формулами голосования
@@ -576,6 +603,7 @@ async function disableRegistrationButtonForProposal(proposalId) {
 }
 
 /* ===== Meeting ticker ===== */
+/* ===== Meeting ticker ===== */
 async function startMeetingTicker(meetingId) {
   if (meetingTimers.has(meetingId)) {
     clearInterval(meetingTimers.get(meetingId));
@@ -617,7 +645,7 @@ async function startMeetingTicker(meetingId) {
             { name: "📈 Статус кворума", value: quorumStatus, inline: true },
             { name: "👥 Общее количество членов", value: String(totalMembers), inline: true },
             { name: "⏱️ Время регистрации", value: formatTimeLeft(meeting.durationms), inline: true },
-            { name: "🕐 Начало регистрации", value: formatMoscowTime(meeting.createdat), inline: false },
+            { name: "🕐 Начало регистрации", value: formatMoscowTime(Number(meeting.createdat)), inline: false },
             { name: "📝 Список зарегистрированных", value: listText, inline: false }
           )
           .setColor(isQuorumMet ? COLORS.SUCCESS : COLORS.DANGER)
@@ -674,8 +702,23 @@ async function startMeetingTicker(meetingId) {
             await thread.send(`ℹ️ **Все зарегистрированные уже имеют роли для голосования.** (${alreadyHadRoles} участников)`);
           }
         } else {
-          // Если кворум не собран, уведомляем в основной канал
-          await ch.send(`❌ **Кворум не собран!** Зарегистрировано ${registeredCount} из ${quorum} необходимых участников. Роли для голосования не выданы.`);
+          // Если кворум не собран, создаем ветку и уведомляем в ВЕТКУ
+          try {
+            const thread = await msg.startThread({
+              name: `📊 ${meeting.title} - Обсуждение`,
+              autoArchiveDuration: 1440,
+              reason: `Обсуждение заседания (кворум не собран)`
+            });
+            
+            await db.updateMeetingThread(meetingId, thread.id);
+            
+            // Отправляем сообщение о неудачном кворуме в ВЕТКУ
+            await thread.send(`❌ **Кворум не собран!** Зарегистрировано ${registeredCount} из ${quorum} необходимых участников. Роли для голосования не выданы.`);
+          } catch (threadError) {
+            console.error("❌ Error creating thread for failed quorum:", threadError);
+            // Если не удалось создать ветку, отправляем в основной канал
+            await ch.send(`❌ **Кворум не собран!** Зарегистрировано ${registeredCount} из ${quorum} необходимых участников. Роли для голосования не выданы.`);
+          }
         }
         
         clearInterval(meetingTimers.get(meetingId));
@@ -754,7 +797,7 @@ async function startVoteTicker(proposalId) {
           .setDescription(`Голосование активно`)
           .addFields(
             { name: "⏳ До завершения", value: leftStr, inline: true },
-            { name: "🕐 Начало", value: formatMoscowTime(voting.startedat), inline: true },
+            { name: "🕐 Начало", value: formatMoscowTime(Number(voting.startedat)), inline: true },
             { name: "🔒 Тип голосования", value: voting.issecret ? "Тайное" : "Открытое", inline: true },
             { name: "📊 Формула", value: getFormulaDescription(voting.formula), inline: true }
           )
@@ -772,6 +815,36 @@ async function startVoteTicker(proposalId) {
   const id = setInterval(updateFn, 10_000);
   voteTimers.set(proposalId, id);
 }
+
+
+// Функция для удаления ephemeral сообщений через 15 секунд
+async function deleteEphemeralWithDelay(interaction, delay = 15000) {
+  try {
+    // Получаем ответ взаимодействия
+    let message;
+    if (interaction.replied) {
+      message = await interaction.fetchReply();
+    } else if (interaction.deferred) {
+      message = await interaction.fetchReply();
+    }
+
+    if (message) {
+      setTimeout(async () => {
+        try {
+          await message.delete();
+        } catch (error) {
+          // Игнорируем ошибки удаления (сообщение уже удалено или нет прав)
+          if (error.code !== 10008) { // Unknown Message
+            console.log("ℹ️ Could not delete ephemeral message (may have been deleted already)");
+          }
+        }
+      }, delay);
+    }
+  } catch (error) {
+    console.log("ℹ️ Could not set up ephemeral message deletion");
+  }
+}
+
 
 /* ===== Finalize vote ===== */
 async function finalizeVote(proposalId) {
@@ -909,7 +982,7 @@ async function finalizeRegularVote(proposalId) {
   }
 
   embed.addFields(
-    { name: "🕐 Начало", value: voting?.startedat ? formatMoscowTime(voting.startedat) : "—", inline: true },
+    { name: "🕐 Начало", value: voting?.startedat ? formatMoscowTime(Number(voting.startedat)) : "—", inline: true },
     { name: "🕐 Завершено", value: formatMoscowTime(Date.now()), inline: true }
   );
 
@@ -1552,8 +1625,8 @@ async function handleStartVoteModal(interaction) {
   try {
     const thread = await client.channels.fetch(proposal.threadid);
     const timeText = ms > 0 ? 
-      `🕐 **Начало:** ${formatMoscowTime(voting.startedAt)}\n⏰ **Завершение:** ${formatMoscowTime(voting.expiresAt)}` :
-      `🕐 **Начало:** ${formatMoscowTime(voting.startedAt)}\n⏰ **Завершение:** До ручного завершения`;
+      `🕐 **Начало:** ${formatMoscowTime(Number(voting.startedat))}\n⏰ **Завершение:** ${formatMoscowTime(voting.expiresAt)}` :
+      `🕐 **Начало:** ${formatMoscowTime(Number(voting.startedat))}\n⏰ **Завершение:** До ручного завершения`;
 
     // Для количественного голосования создаем специальные кнопки
     let voteRows = [];
@@ -2089,25 +2162,32 @@ async function handleLateRegistrationButton(interaction) {
   const meeting = await db.getMeeting(meetingId);
   
   if (!meeting) {
-    await interaction.reply({ content: "❌ Заседание не найдено.", flags: 64 });
+    await safeReply(interaction, "❌ Заседание не найдено.");
     return;
   }
 
   // Проверяем, что регистрация уже завершена
   if (meeting.open) {
-    await interaction.reply({ content: "❌ Регистрация еще не завершена. Дождитесь окончания.", flags: 64 });
+    await safeReply(interaction, "❌ Регистрация еще не завершена. Дождитесь окончания.");
     return;
   }
 
   await interaction.deferReply({ flags: 64 });
 
   try {
-    // СОЗДАЕМ ВЕТКУ ПРЯМО ПОД СООБЩЕНИЕМ С КНОПКОЙ
-    const thread = await interaction.message.startThread({
-      name: `📝 Поздняя регистрация - ${interaction.user.displayName}`,
-      autoArchiveDuration: 1440,
-      reason: `Поздняя регистрация на заседание: ${meeting.title}`
-    });
+    let thread;
+    
+    // Проверяем, есть ли уже ветка у сообщения
+    if (interaction.message.thread) {
+      thread = interaction.message.thread;
+    } else {
+      // СОЗДАЕМ ВЕТКУ ПРЯМО ПОД СООБЩЕНИЕМ С КНОПКОЙ
+      thread = await interaction.message.startThread({
+        name: `📝 Поздняя регистрация - ${interaction.user.displayName}`,
+        autoArchiveDuration: 1440,
+        reason: `Поздняя регистрация на заседание: ${meeting.title}`
+      });
+    }
 
     const embed = new EmbedBuilder()
       .setTitle(`⏰ Запрос на позднюю регистрацию`)
@@ -2211,7 +2291,7 @@ async function handleApproveLateButton(interaction) {
         { name: "📈 Статус кворума", value: registeredCount >= quorum ? "✅ Собран" : "❌ Не собран", inline: true },
         { name: "👥 Общее количество членов", value: String(meeting.totalmembers), inline: true },
         { name: "⏱️ Время регистрации", value: formatTimeLeft(meeting.durationms), inline: true },
-        { name: "🕐 Начало регистрации", value: formatMoscowTime(meeting.createdat), inline: false },
+        { name: "🕐 Начало регистрации", value: formatMoscowTime(Number(meeting.createdat)), inline: false },
         { name: "📝 Список зарегистрированных", value: listText, inline: false }
       )
       .setColor(registeredCount >= quorum ? COLORS.SUCCESS : COLORS.DANGER)
