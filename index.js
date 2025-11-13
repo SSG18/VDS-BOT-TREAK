@@ -159,7 +159,6 @@ async function safeReply(interaction, content, options = {}) {
       response = await interaction.followUp({ 
         content, 
         flags: 64, 
-        ephemeral: true,
         ...options 
       });
     } else if (interaction.deferred) {
@@ -171,24 +170,21 @@ async function safeReply(interaction, content, options = {}) {
       response = await interaction.reply({ 
         content, 
         flags: 64,
-        ephemeral: true,
         ...options 
       });
     }
     
-    // Автоматически удаляем ephemeral сообщение через 15 секунд
-    if (response && options.autoDelete !== false) {
-      setTimeout(async () => {
-        try {
-          await response.delete();
-        } catch (error) {
-          // Игнорируем ошибки удаления
-          if (error.code !== 10008) { // Unknown Message
-            console.log("ℹ️ Could not delete ephemeral message");
-          }
+    // УДАЛЯЕМ ВСЕ EPHEMERAL СООБЩЕНИЯ ЧЕРЕЗ 15 СЕКУНД
+    setTimeout(async () => {
+      try {
+        await response.delete();
+      } catch (error) {
+        // Игнорируем ошибки удаления (сообщение уже удалено или нет прав)
+        if (error.code !== 10008) { // Unknown Message
+          console.log("ℹ️ Could not delete ephemeral message");
         }
-      }, 15000);
-    }
+      }
+    }, 15000);
     
     return response;
   } catch (error) {
@@ -1274,13 +1270,15 @@ async function createMeeting(interaction) {
       new ButtonBuilder().setCustomId(`postpone_meeting_${id}`).setLabel("Перенести").setStyle(ButtonStyle.Secondary)
     );
 
-    const message = await interaction.reply({ 
+    // УБИРАЕМ fetchReply и используем альтернативный подход
+    await interaction.reply({ 
       content: mentionRoleId ? `<@&${mentionRoleId}>` : null, 
       embeds: [embed], 
-      components: [buttons],
-      fetchReply: true
+      components: [buttons]
     });
     
+    // Получаем сообщение после отправки
+    const message = await interaction.fetchReply();
     await db.updateMeetingMessage(id, message.id);
   } catch (e) {
     console.error("❌ Error sending meeting message:", e);
@@ -2118,13 +2116,13 @@ async function handleClearRolesButton(interaction) {
   const meeting = await db.getMeeting(meetingId);
   
   if (!meeting) {
-    await interaction.reply({ content: "❌ Заседание не найдено.", flags: 64 });
+    await safeReply(interaction, "❌ Заседание не найдено.");
     return;
   }
   
   const member = interaction.member;
   if (!isChamberChairman(member, meeting.chamber) && !isAdmin(member)) {
-    await interaction.reply({ content: "❌ У вас нет прав для очистки ролей.", flags: 64 });
+    await safeReply(interaction, "❌ У вас нет прав для очистки ролей.");
     return;
   }
   
@@ -2146,10 +2144,69 @@ async function handleClearRolesButton(interaction) {
       }
     }
     
-    await interaction.editReply({ content: `✅ Роли очищены у ${count} участников.` });
-    
     // Убираем кнопку после нажатия
     await interaction.message.edit({ components: [] });
+    
+    // Отправляем сообщение в ВЕТКУ заседания вместо ephemeral
+    if (meeting.threadid) {
+      try {
+        const thread = await client.channels.fetch(meeting.threadid);
+        const embed = new EmbedBuilder()
+          .setTitle(`🏁 Заседание завершено`)
+          .setDescription(`**${meeting.title}**`)
+          .addFields(
+            { name: "📅 Дата заседания", value: meeting.meetingdate, inline: true },
+            { name: "👤 Завершил", value: `<@${interaction.user.id}>`, inline: true },
+            { name: "🕐 Время завершения", value: formatMoscowTime(Date.now()), inline: true },
+            { name: "🎫 Карточки регистрации изъяты", value: `У ${count} участников`, inline: false }
+          )
+          .setColor(COLORS.SUCCESS)
+          .setFooter({ text: FOOTER })
+          .setTimestamp();
+        
+        await thread.send({ embeds: [embed] });
+        
+        // Также закрываем ветку через 30 секунд
+        setTimeout(async () => {
+          try {
+            await thread.setArchived(true, 'Заседание завершено');
+          } catch (e) {
+            console.error("❌ Error archiving thread:", e);
+          }
+        }, 30000);
+        
+        await interaction.editReply({ 
+          content: `✅ Сообщение о завершении заседания отправлено в ветку. Карточки регистрации изъяты у ${count} участников.` 
+        });
+        
+      } catch (threadError) {
+        console.error("❌ Error sending message to thread:", threadError);
+        await interaction.editReply({ 
+          content: `✅ Роли очищены у ${count} участников. (Ошибка отправки в ветку)` 
+        });
+      }
+    } else {
+      // Если ветки нет, отправляем в основной канал
+      const ch = await client.channels.fetch(meeting.channelid);
+      const embed = new EmbedBuilder()
+        .setTitle(`🏁 Заседание завершено`)
+        .setDescription(`**${meeting.title}**`)
+        .addFields(
+          { name: "📅 Дата заседания", value: meeting.meetingdate, inline: true },
+          { name: "👤 Завершил", value: `<@${interaction.user.id}>`, inline: true },
+          { name: "🕐 Время завершения", value: formatMoscowTime(Date.now()), inline: true },
+          { name: "🎫 Карточки регистрации изъяты", value: `У ${count} участников`, inline: false }
+        )
+        .setColor(COLORS.SUCCESS)
+        .setFooter({ text: FOOTER })
+        .setTimestamp();
+      
+      await ch.send({ embeds: [embed] });
+      
+      await interaction.editReply({ 
+        content: `✅ Сообщение о завершении заседания отправлено. Карточки регистрации изъяты у ${count} участников.` 
+      });
+    }
     
   } catch (e) {
     console.error("❌ Error clearing roles:", e);
@@ -2180,13 +2237,25 @@ async function handleLateRegistrationButton(interaction) {
     // Проверяем, есть ли уже ветка у сообщения
     if (interaction.message.thread) {
       thread = interaction.message.thread;
+      console.log(`ℹ️ Using existing thread: ${thread.id}`);
     } else {
-      // СОЗДАЕМ ВЕТКУ ПРЯМО ПОД СООБЩЕНИЕМ С КНОПКОЙ
-      thread = await interaction.message.startThread({
-        name: `📝 Поздняя регистрация - ${interaction.user.displayName}`,
-        autoArchiveDuration: 1440,
-        reason: `Поздняя регистрация на заседание: ${meeting.title}`
-      });
+      try {
+        // Пытаемся создать ветку
+        thread = await interaction.message.startThread({
+          name: `📝 Поздняя регистрация - ${interaction.user.displayName}`,
+          autoArchiveDuration: 1440,
+          reason: `Поздняя регистрация на заседание: ${meeting.title}`
+        });
+        console.log(`✅ Created new thread: ${thread.id}`);
+      } catch (error) {
+        if (error.code === 'MessageExistingThread') {
+          // Если ветка уже существует, получаем ее
+          thread = interaction.message.thread;
+          console.log(`ℹ️ Thread already exists, using: ${thread.id}`);
+        } else {
+          throw error;
+        }
+      }
     }
 
     const embed = new EmbedBuilder()
@@ -2212,8 +2281,8 @@ async function handleLateRegistrationButton(interaction) {
         .setStyle(ButtonStyle.Danger)
     );
 
+    // УБИРАЕМ @here - отправляем без упоминаний
     await thread.send({ 
-      content: `@here`, 
       embeds: [embed], 
       components: [buttons] 
     });
@@ -2917,6 +2986,7 @@ async function handleRegularVoteButtons(interaction) {
     await safeReply(interaction, "❌ Ошибка при голосовании.");
   }
 }
+
 
 async function handleQuantitativeVoteButtons(interaction) {
   // ПРОВЕРКА: если уже ответили, выходим
