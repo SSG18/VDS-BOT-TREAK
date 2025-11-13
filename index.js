@@ -179,7 +179,6 @@ async function safeReply(interaction, content, options = {}) {
   }
 }
 
-
 // ================== OPTIMIZED FUNCTIONS ==================
 
 // Функция проверки прав администратора
@@ -499,14 +498,14 @@ async function updateSpeakersMessage(proposalId) {
     }
     
     if (speakersByType['содоклад'].length > 0) {
-      description += `\n**2. Содоклад:**\n`;
+      description += `**2. Содоклад:**\n`;
       speakersByType['содоклад'].forEach((speaker, index) => {
         description += `   ${index + 1}. <@${speaker.userid}> (${speaker.displayname})\n`;
       });
     }
     
     if (speakersByType['прения'].length > 0) {
-      description += `\n**3. Прения:**\n`;
+      description += `**3. Прения:**\n`;
       speakersByType['прения'].forEach((speaker, index) => {
         description += `   ${index + 1}. <@${speaker.userid}> (${speaker.displayname})\n`;
       });
@@ -849,7 +848,7 @@ async function finalizeRegularVote(proposalId) {
     resultEmoji = "❌";
     tagId = FORUM_TAGS.REJECTED;
   }
-  // 3. Если воздержавшихся больше, чем за и против вместе взятых
+  // 3. Если воздержавшихсь больше, чем за и против вместе взятых
   else if (abstainCount > (forCount + againstCount)) {
     resultText = "Не принято";
     resultColor = COLORS.SECONDARY;
@@ -1648,8 +1647,8 @@ async function handleStartVoteModal(interaction) {
 }
 
 async function handleSpeakerModal(interaction) {
-  // ПРОВЕРКА: если уже ответили, выходим
-  if (interaction.replied || interaction.deferred) return;
+  // НЕМЕДЛЕННО подтверждаем взаимодействие
+  await interaction.deferReply({ flags: 64 });
   
   const pid = interaction.customId.split("speaker_modal_")[1];
   const typeInput = interaction.fields.getTextInputValue("speaker_type");
@@ -1691,10 +1690,12 @@ async function handleSpeakerModal(interaction) {
     // Обновляем сообщение со списком выступающих
     await updateSpeakersMessage(pid);
     
-    await safeReply(interaction, `✅ Вы зарегистрированы как **${displayName}** для выступления по этой инициативе.`);
+    await interaction.editReply({ 
+      content: `✅ Вы зарегистрированы как **${displayName}** для выступления по этой инициативе.` 
+    });
   } catch (error) {
     console.error("❌ Error in speaker modal:", error);
-    await safeReply(interaction, "❌ Ошибка при регистрации выступающего.");
+    await interaction.editReply({ content: "❌ Ошибка при регистрации выступающего." });
   }
 }
 
@@ -2040,7 +2041,7 @@ async function handleGetCardButton(interaction) {
 }
 
 async function handleClearRolesButton(interaction) {
-  const meetingId = cid.split("clear_roles_")[1];
+  const meetingId = interaction.customId.split("clear_roles_")[1];
   const meeting = await db.getMeeting(meetingId);
   
   if (!meeting) {
@@ -2084,7 +2085,7 @@ async function handleClearRolesButton(interaction) {
 }
 
 async function handleLateRegistrationButton(interaction) {
-  const meetingId = cid.split("late_registration_")[1];
+  const meetingId = interaction.customId.split("late_registration_")[1];
   const meeting = await db.getMeeting(meetingId);
   
   if (!meeting) {
@@ -2238,7 +2239,7 @@ async function handleApproveLateButton(interaction) {
 }
 
 async function handleRejectLateButton(interaction) {
-  const parts = cid.split("_");
+  const parts = interaction.customId.split("_");
   const meetingId = parts[2];
   const userId = parts[3];
   
