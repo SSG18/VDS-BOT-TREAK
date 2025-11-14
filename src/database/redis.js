@@ -1,9 +1,9 @@
 import { createClient } from 'redis';
 
 const redisClient = createClient({
-  // You may need to configure the URL if your Redis server is not on localhost
-  // url: 'redis://:password@hostname:port'
+  url: 'redis://127.0.0.1:6379'
 });
+
 
 redisClient.on('error', (err) => console.error('❌ Redis Client Error', err));
 redisClient.on('connect', () => console.log('✅ Connected to Redis'));
