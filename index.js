@@ -1,10 +1,10 @@
-// index.js (ПОЛНАЯ ВЕРСИЯ с исправлениями)
+// index.js (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 
 /**
  * Бот для управления законодательными процессами 
  * с поддержкой Государственных Дум и Совета Федерации
  * Made by Валерий Зорькин 
- * Версия 3.1 - Полная версия с исправлениями
+ * Версия 3.2 - Исправленная и оптимизированная
  */
 
 import 'dotenv/config';
@@ -98,7 +98,7 @@ const FORUM_TAGS = {
 };
 
 const ADMIN_ROLE_SEND_ID = process.env.ADMIN_ROLE_SEND_ID;
-const SYSADMIN_ROLE_ID = process.env.SYSADMIN_ROLE_ID; 
+const SYSADMIN_ROLE_ID = process.env.SYSADMIN_ROLE_ID;
 
 // ================== CONFIG VALIDATION ==================
 function validateConfig() {
@@ -137,9 +137,14 @@ function validateConfig() {
   return true;
 }
 
-// Вызов проверки конфигурации (добавьте после объявления констант)
+// Вызов проверки конфигурации
 if (!validateConfig()) {
   console.error("❌ Configuration validation failed. Please check your environment variables.");
+  process.exit(1);
+}
+
+if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
+  console.error("❌ Please set DISCORD_TOKEN, CLIENT_ID, GUILD_ID env vars.");
   process.exit(1);
 }
 
@@ -190,16 +195,9 @@ const EVENT_EMOJIS = {
   'default': '📌'
 };
 
-if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
-  console.error("❌ Please set DISCORD_TOKEN, CLIENT_ID, GUILD_ID env vars.");
-  process.exit(1);
-}
-
-// ================== SAFE REPLY FUNCTION ==================
 // ================== OPTIMIZED SAFE REPLY FUNCTION ==================
 async function safeReply(interaction, content, options = {}) {
   try {
-    // Если уже ответили, не делаем ничего
     if (interaction.replied || interaction.deferred) {
       return null;
     }
@@ -210,7 +208,6 @@ async function safeReply(interaction, content, options = {}) {
       ...options 
     });
     
-    // Быстрое удаление ephemeral сообщений (2 секунды)
     setTimeout(async () => {
       try {
         await response.delete();
@@ -296,7 +293,6 @@ function formatTimeLeft(ms) {
 // Функция для форматирования времени с учетом часового пояса Москвы
 function formatMoscowTime(timestamp) {
   try {
-    // Убедимся, что timestamp является числом
     const date = new Date(Number(timestamp));
     if (isNaN(date.getTime())) {
       return "Некорректная дата";
@@ -633,7 +629,6 @@ async function disableRegistrationButtonForProposal(proposalId) {
 }
 
 /* ===== Meeting ticker ===== */
-/* ===== Meeting ticker ===== */
 async function startMeetingTicker(meetingId) {
   if (meetingTimers.has(meetingId)) {
     clearInterval(meetingTimers.get(meetingId));
@@ -846,36 +841,6 @@ async function startVoteTicker(proposalId) {
   voteTimers.set(proposalId, id);
 }
 
-
-// Функция для удаления ephemeral сообщений через 15 секунд
-async function deleteEphemeralWithDelay(interaction, delay = 15000) {
-  try {
-    // Получаем ответ взаимодействия
-    let message;
-    if (interaction.replied) {
-      message = await interaction.fetchReply();
-    } else if (interaction.deferred) {
-      message = await interaction.fetchReply();
-    }
-
-    if (message) {
-      setTimeout(async () => {
-        try {
-          await message.delete();
-        } catch (error) {
-          // Игнорируем ошибки удаления (сообщение уже удалено или нет прав)
-          if (error.code !== 10008) { // Unknown Message
-            console.log("ℹ️ Could not delete ephemeral message (may have been deleted already)");
-          }
-        }
-      }, delay);
-    }
-  } catch (error) {
-    console.log("ℹ️ Could not set up ephemeral message deletion");
-  }
-}
-
-
 /* ===== Finalize vote ===== */
 async function finalizeVote(proposalId) {
   const proposal = await db.getProposal(proposalId);
@@ -894,7 +859,6 @@ async function finalizeVote(proposalId) {
   }
 }
 
-/* ===== Finalize regular vote ===== */
 /* ===== Finalize regular vote ===== */
 async function finalizeRegularVote(proposalId) {
   const proposal = await db.getProposal(proposalId);
@@ -1288,7 +1252,6 @@ async function createMeeting(interaction) {
       new ButtonBuilder().setCustomId(`postpone_meeting_${id}`).setLabel("Перенести").setStyle(ButtonStyle.Secondary)
     );
 
-    // УБИРАЕМ fetchReply и используем альтернативный подход
     await interaction.reply({ 
       content: mentionRoleId ? `<@&${mentionRoleId}>` : null, 
       embeds: [embed], 
