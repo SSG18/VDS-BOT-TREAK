@@ -208,16 +208,54 @@ class CongressDatabase {
 
   // Методы для работы с предложениями
   async getNextProposalNumber(chamber) {
+    // Попытка увеличить счётчик; если записи нет, создаём её с начальным значением 1
     const result = await this.query(
       'UPDATE chamber_counters SET value = value + 1 WHERE chamberId = $1 RETURNING value',
       [chamber]
     );
-    
+    if (!result.rows || result.rows.length === 0 || result.rows[0].value === undefined) {
+      // вставляем начальное значение 1
+      await this.query(
+        'INSERT INTO chamber_counters (chamberId, value) VALUES ($1, 1) ON CONFLICT (chamberId) DO UPDATE SET value = chamber_counters.value',
+        [chamber]
+      );
+      const prefix = chamber === 'sf' ? 'СФ' : 'ГД';
+      return `${prefix}-001`;
+    }
     const number = String(result.rows[0].value).padStart(3, '0');
     const prefix = chamber === 'sf' ? 'СФ' : 'ГД';
     return `${prefix}-${number}`;
   }
+// ДОБАВЬТЕ эти методы в класс CongressDatabase:
 
+// Метод для получения количества уникальных голосовавших
+async getUniqueVotersCount(proposalId, stage = 1) {
+  const result = await this.query(
+    `SELECT COUNT(DISTINCT userId) as count 
+     FROM votes 
+     WHERE proposalId = $1 AND stage = $2`,
+    [proposalId, stage]
+  );
+  return parseInt(result.rows[0].count) || 0;
+}
+
+// Оптимизированный метод для получения голосов с пагинацией
+async getVotes(proposalId, stage = 1, limit = 1000) {
+  const result = await this.query(
+    'SELECT * FROM votes WHERE proposalId = $1 AND stage = $2 ORDER BY createdAt ASC LIMIT $3',
+    [proposalId, stage, limit]
+  );
+  return result.rows;
+}
+
+// Метод для быстрой проверки существования предложения
+async proposalExists(proposalId) {
+  const result = await this.query(
+    'SELECT 1 FROM proposals WHERE id = $1 LIMIT 1',
+    [proposalId]
+  );
+  return result.rows.length > 0;
+}
   async createProposal(proposal) {
     const eventsString = JSON.stringify(proposal.events || []);
     
