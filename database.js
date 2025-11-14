@@ -1,4 +1,4 @@
-// database.js (PostgreSQL версия)
+// database.js (PostgreSQL версия - ИСПРАВЛЕННАЯ)
 import pkg from 'pg';
 const { Pool } = pkg;
 
@@ -208,54 +208,74 @@ class CongressDatabase {
 
   // Методы для работы с предложениями
   async getNextProposalNumber(chamber) {
-    // Попытка увеличить счётчик; если записи нет, создаём её с начальным значением 1
-    const result = await this.query(
-      'UPDATE chamber_counters SET value = value + 1 WHERE chamberId = $1 RETURNING value',
-      [chamber]
-    );
-    if (!result.rows || result.rows.length === 0 || result.rows[0].value === undefined) {
-      // вставляем начальное значение 1
-      await this.query(
-        'INSERT INTO chamber_counters (chamberId, value) VALUES ($1, 1) ON CONFLICT (chamberId) DO UPDATE SET value = chamber_counters.value',
+    try {
+      // Сначала пытаемся обновить существующий счетчик
+      let result = await this.query(
+        'UPDATE chamber_counters SET value = value + 1 WHERE chamberId = $1 RETURNING value',
         [chamber]
       );
+      
+      // Если счетчика не было, создаем его и снова пытаемся обновить
+      if (result.rows.length === 0) {
+        await this.query(
+          'INSERT INTO chamber_counters (chamberId, value) VALUES ($1, 1) ON CONFLICT (chamberId) DO NOTHING',
+          [chamber]
+        );
+        result = await this.query(
+          'UPDATE chamber_counters SET value = value + 1 WHERE chamberId = $1 RETURNING value',
+          [chamber]
+        );
+      }
+      
+      // Если все еще нет результата, используем значение по умолчанию
+      if (result.rows.length === 0) {
+        console.warn(`⚠️ Could not get counter for chamber ${chamber}, using default value`);
+        const number = '001';
+        const prefix = chamber === 'sf' ? 'СФ' : 'ГД';
+        return `${prefix}-${number}`;
+      }
+      
+      const number = String(result.rows[0].value).padStart(3, '0');
       const prefix = chamber === 'sf' ? 'СФ' : 'ГД';
-      return `${prefix}-001`;
+      return `${prefix}-${number}`;
+    } catch (error) {
+      console.error('❌ Error in getNextProposalNumber:', error);
+      // Fallback на случай ошибки
+      const number = '001';
+      const prefix = chamber === 'sf' ? 'СФ' : 'ГД';
+      return `${prefix}-${number}`;
     }
-    const number = String(result.rows[0].value).padStart(3, '0');
-    const prefix = chamber === 'sf' ? 'СФ' : 'ГД';
-    return `${prefix}-${number}`;
   }
-// ДОБАВЬТЕ эти методы в класс CongressDatabase:
 
-// Метод для получения количества уникальных голосовавших
-async getUniqueVotersCount(proposalId, stage = 1) {
-  const result = await this.query(
-    `SELECT COUNT(DISTINCT userId) as count 
-     FROM votes 
-     WHERE proposalId = $1 AND stage = $2`,
-    [proposalId, stage]
-  );
-  return parseInt(result.rows[0].count) || 0;
-}
+  // Метод для получения количества уникальных голосовавших
+  async getUniqueVotersCount(proposalId, stage = 1) {
+    const result = await this.query(
+      `SELECT COUNT(DISTINCT userId) as count 
+       FROM votes 
+       WHERE proposalId = $1 AND stage = $2`,
+      [proposalId, stage]
+    );
+    return parseInt(result.rows[0].count) || 0;
+  }
 
-// Оптимизированный метод для получения голосов с пагинацией
-async getVotes(proposalId, stage = 1, limit = 1000) {
-  const result = await this.query(
-    'SELECT * FROM votes WHERE proposalId = $1 AND stage = $2 ORDER BY createdAt ASC LIMIT $3',
-    [proposalId, stage, limit]
-  );
-  return result.rows;
-}
+  // Оптимизированный метод для получения голосов с пагинацией
+  async getVotes(proposalId, stage = 1, limit = 1000) {
+    const result = await this.query(
+      'SELECT * FROM votes WHERE proposalId = $1 AND stage = $2 ORDER BY createdAt ASC LIMIT $3',
+      [proposalId, stage, limit]
+    );
+    return result.rows;
+  }
 
-// Метод для быстрой проверки существования предложения
-async proposalExists(proposalId) {
-  const result = await this.query(
-    'SELECT 1 FROM proposals WHERE id = $1 LIMIT 1',
-    [proposalId]
-  );
-  return result.rows.length > 0;
-}
+  // Метод для быстрой проверки существования предложения
+  async proposalExists(proposalId) {
+    const result = await this.query(
+      'SELECT 1 FROM proposals WHERE id = $1 LIMIT 1',
+      [proposalId]
+    );
+    return result.rows.length > 0;
+  }
+
   async createProposal(proposal) {
     const eventsString = JSON.stringify(proposal.events || []);
     
@@ -430,14 +450,6 @@ async proposalExists(proposalId) {
         voteType = EXCLUDED.voteType,
         createdAt = EXCLUDED.createdAt
     `, [vote.proposalId, vote.userId, vote.voteType, vote.createdAt, vote.stage || 1]);
-  }
-
-  async getVotes(proposalId, stage = 1) {
-    const result = await this.query(
-      'SELECT * FROM votes WHERE proposalId = $1 AND stage = $2',
-      [proposalId, stage]
-    );
-    return result.rows;
   }
 
   async getVoteCounts(proposalId, stage = 1) {
