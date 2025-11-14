@@ -31,7 +31,7 @@ import {
 import db from "./database.js";
 
 /* ================== CONFIG ================== */
-const TOKEN = process.env.DISCORD_TOKEN;
+/*const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
@@ -98,7 +98,51 @@ const FORUM_TAGS = {
 };
 
 const ADMIN_ROLE_SEND_ID = process.env.ADMIN_ROLE_SEND_ID;
-const SYSADMIN_ROLE_ID = process.env.SYSADMIN_ROLE_ID;
+const SYSADMIN_ROLE_ID = process.env.SYSADMIN_ROLE_ID;*/ 
+
+// ================== CONFIG VALIDATION ==================
+function validateConfig() {
+  const requiredEnvVars = [
+    'DISCORD_TOKEN', 'CLIENT_ID', 'GUILD_ID',
+    'SF_CHANNEL_ID', 'GD_RUBLEVKA_CHANNEL_ID', 'GD_ARBAT_CHANNEL_ID', 
+    'GD_PATRICKI_CHANNEL_ID', 'GD_TVERSKOY_CHANNEL_ID',
+    'SF_MEETING_CHANNEL_ID', 'GD_RUBLEVKA_MEETING_CHANNEL_ID',
+    'GD_ARBAT_MEETING_CHANNEL_ID', 'GD_PATRICKI_MEETING_CHANNEL_ID', 
+    'GD_TVERSKOY_MEETING_CHANNEL_ID',
+    'FORUM_TAG_ON_REVIEW', 'FORUM_TAG_APPROVED', 'FORUM_TAG_REJECTED',
+    'FORUM_TAG_NOT_APPROVED', 'FORUM_TAG_SIGNED', 'FORUM_TAG_VETOED',
+    'SENATOR_ROLE_ID', 'SENATOR_NO_VOTE_ROLE_ID', 'DEPUTY_ROLE_ID',
+    'DEPUTY_NO_VOTE_ROLE_ID', 'CHAIRMAN_ROLE_ID', 'VICE_CHAIRMAN_ROLE_ID',
+    'GOVERNMENT_CHAIRMAN_ROLE_ID', 'PRESIDENT_USER_ID',
+    'RUBLEVKA_ROLE_ID', 'ARBAT_ROLE_ID', 'PATRICKI_ROLE_ID', 'TVERSKOY_ROLE_ID',
+    'ADMIN_ROLE_SEND_ID', 'SYSADMIN_ROLE_ID'
+  ];
+
+  const missing = requiredEnvVars.filter(key => !process.env[key]);
+  
+  if (missing.length > 0) {
+    console.error("❌ Missing required environment variables:", missing);
+    return false;
+  }
+  
+  // Проверка каналов
+  for (const [chamber, channelId] of Object.entries(CHAMBER_CHANNELS)) {
+    if (!channelId) {
+      console.error(`❌ Missing channel ID for chamber: ${chamber}`);
+      return false;
+    }
+  }
+
+  console.log("✅ All configuration validated successfully");
+  return true;
+}
+
+// Вызов проверки конфигурации (добавьте после объявления констант)
+if (!validateConfig()) {
+  console.error("❌ Configuration validation failed. Please check your environment variables.");
+  process.exit(1);
+}
+
 const FOOTER = "РЕАЛИЗОВАНО ПРИ ПОДДЕРЖКЕ ВСЕРОССИЙСКОЙ ПОЛИТИЧЕСКОЙ ПАРТИИ «ДОБРОДЕТЕЛИ РОССИИ»";
 
 const COLORS = {
@@ -152,41 +196,33 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
 }
 
 // ================== SAFE REPLY FUNCTION ==================
-// ================== SAFE REPLY FUNCTION ==================
+// ================== OPTIMIZED SAFE REPLY FUNCTION ==================
 async function safeReply(interaction, content, options = {}) {
   try {
-    let response;
-    if (interaction.replied) {
-      response = await interaction.followUp({ 
-        content, 
-        flags: 64, 
-        ...options 
-      });
-    } else if (interaction.deferred) {
-      response = await interaction.editReply({ 
-        content,
-        ...options 
-      });
-    } else {
-      response = await interaction.reply({ 
-        content, 
-        flags: 64,
-        ...options 
-      });
+    // Если уже ответили, не делаем ничего
+    if (interaction.replied || interaction.deferred) {
+      return null;
     }
+
+    const response = await interaction.reply({ 
+      content, 
+      flags: 64, 
+      ...options 
+    });
     
-    // УДАЛЯЕМ ВСЕ EPHEMERAL СООБЩЕНИЯ ЧЕРЕЗ 5 СЕКУНД (уменьшено для скорости)
+    // Быстрое удаление ephemeral сообщений (2 секунды)
     setTimeout(async () => {
       try {
         await response.delete();
-      } catch (error) {
+      } catch (deleteError) {
         // Игнорируем ошибки удаления
       }
-    }, 5000);
+    }, 3500);
     
     return response;
   } catch (error) {
     console.error("❌ Error in safeReply:", error);
+    return null;
   }
 }
 
@@ -859,24 +895,25 @@ async function finalizeVote(proposalId) {
 }
 
 /* ===== Finalize regular vote ===== */
+/* ===== Finalize regular vote ===== */
 async function finalizeRegularVote(proposalId) {
   const proposal = await db.getProposal(proposalId);
   if (!proposal) return;
 
-  // Get vote counts
-  const voteCounts = await db.getVoteCounts(proposalId);
-  const forCount = voteCounts.find(v => v.votetype === 'for')?.count || 0;
-  const againstCount = voteCounts.find(v => v.votetype === 'against')?.count || 0;
-  const abstainCount = voteCounts.find(v => v.votetype === 'abstain')?.count || 0;
+  // Получаем УНИКАЛЬНЫХ голосовавших
+  const uniqueVotes = await db.getVotes(proposalId);
+  const totalVoted = new Set(uniqueVotes.map(vote => vote.userid)).size;
+
+  // Получаем голоса по типам из уникальных записей
+  const forCount = uniqueVotes.filter(v => v.votetype === 'for').length;
+  const againstCount = uniqueVotes.filter(v => v.votetype === 'against').length;
+  const abstainCount = uniqueVotes.filter(v => v.votetype === 'abstain').length;
   
-  const totalVoted = forCount + againstCount + abstainCount;
-  
-  // Получаем информацию о заседании ТОЛЬКО для этой палаты
+  // Получаем информацию о заседании
   const meetingInfo = await db.getLastMeetingByChamber(proposal.chamber);
   
-  // Используем данные из последнего заседания этой палаты, или ставим разумные заглушки
-  const voteQuorum = meetingInfo ? meetingInfo.quorum : 1; 
-  const totalMembers = meetingInfo ? meetingInfo.totalmembers : 53; 
+  const voteQuorum = meetingInfo ? meetingInfo.quorum : 1;
+  const totalMembers = meetingInfo ? meetingInfo.totalmembers : 53;
   const registeredCount = meetingInfo ? await db.getRegistrationCount(meetingInfo.id) : 0;
   
   const totalPossible = totalMembers;
@@ -891,54 +928,43 @@ async function finalizeRegularVote(proposalId) {
   // Вычисляем результат по формуле
   const { requiredFor, requiredTotal, isPassed } = calculateVoteResult(forCount, againstCount, abstainCount, formula, totalMembers);
   
-  // Определяем результат с учетом кворума и других условий
+  // Определяем результат
   let resultText = "Не принято";
   let resultColor = COLORS.SECONDARY;
   let resultEmoji = "❌";
   let tagId = FORUM_TAGS.NOT_APPROVED;
   
-  // Проверяем кворум (общее количество голосов должно быть >= кворуму из последнего заседания)
   const isQuorumMet = totalVoted >= voteQuorum;
   
-  // Проверяем условия по порядку:
-  // 1. Если не набрали кворум (меньше требуемого количества голосов)
   if (!isQuorumMet) {
     resultText = "Не принято";
     resultColor = COLORS.SECONDARY;
     resultEmoji = "❌";
     tagId = FORUM_TAGS.NOT_APPROVED;
-  }
-  // 2. Если против больше, чем за
-  else if (againstCount > forCount) {
+  } else if (againstCount > forCount) {
     resultText = "Отклонено";
     resultColor = COLORS.DANGER;
     resultEmoji = "❌";
     tagId = FORUM_TAGS.REJECTED;
-  }
-  // 3. Если воздержавшихсь больше, чем за и против вместе взятых
-  else if (abstainCount > (forCount + againstCount)) {
+  } else if (abstainCount > (forCount + againstCount)) {
     resultText = "Не принято";
     resultColor = COLORS.SECONDARY;
     resultEmoji = "❌";
     tagId = FORUM_TAGS.NOT_APPROVED;
-  }
-  // 4. Если прошло по формуле
-  else if (isPassed) {
+  } else if (isPassed) {
     resultText = "Принято";
     resultColor = COLORS.SUCCESS;
     resultEmoji = "✅";
     tagId = FORUM_TAGS.APPROVED;
-  }
-  // 5. Во всех остальных случаях - не принято
-  else {
+  } else {
     resultText = "Не принято";
     resultColor = COLORS.SECONDARY;
     resultEmoji = "❌";
     tagId = FORUM_TAGS.NOT_APPROVED;
   }
 
-  // Get detailed votes (только для открытого голосования)
-  const allVotes = isSecret ? [] : await db.getVotes(proposalId);
+  // Получаем детали голосования (только для открытого)
+  const allVotes = isSecret ? [] : uniqueVotes;
   const listParts = allVotes.map(vote => {
     const emoji = vote.votetype === 'for' ? '✅' : vote.votetype === 'against' ? '❌' : '⚪';
     return `${emoji} <@${vote.userid}>`;
@@ -966,7 +992,6 @@ async function finalizeRegularVote(proposalId) {
     .setFooter({ text: FOOTER })
     .setTimestamp();
 
-  // Добавляем поле с поименным голосованием только для открытого голосования
   if (!isSecret) {
     embed.addFields({ 
       name: "🗳️ Поимённое голосование", 
@@ -983,10 +1008,8 @@ async function finalizeRegularVote(proposalId) {
   try {
     const thread = await client.channels.fetch(proposal.threadid);
     
-    // Создаем Action Row для кнопок
     const actionRow = new ActionRowBuilder();
     
-    // Если голосование прошло в ГосДуме и результат "Принято", добавляем кнопки для председателя правительства
     if (resultText === "Принято" && proposal.chamber !== 'sf' && !proposal.isquantitative) {
       actionRow.addComponents(
         new ButtonBuilder()
@@ -1000,7 +1023,6 @@ async function finalizeRegularVote(proposalId) {
       );
     }
     
-    // Если голосование прошло в Совете Федерации и результат "Принято", добавляем кнопки для президента
     if (resultText === "Принято" && proposal.chamber === 'sf' && !proposal.isquantitative) {
       actionRow.addComponents(
         new ButtonBuilder()
@@ -1027,18 +1049,17 @@ async function finalizeRegularVote(proposalId) {
       await thread.send({ embeds: [embed], components });
     }
 
-    // Для количественного голосования или отклоненных предложений закрываем тред
     if (proposal.isquantitative || resultText !== "Принято") {
       setTimeout(async () => {
         await closeThreadWithTag(proposal.threadid, tagId);
-      }, 30_000);
+      }, 30000);
     }
 
   } catch (e) {
     console.error("❌ Error publishing vote results:", e);
   }
 
-  // Update database
+  // Обновляем базу данных
   await db.endVoting(proposalId, Date.now());
   await db.updateProposalStatus(proposalId, resultText);
 
@@ -1053,10 +1074,9 @@ async function finalizeRegularVote(proposalId) {
   });
   await db.updateProposalEvents(proposalId, events);
   
-  // Обновляем сообщение с хронологией
   await updateHistoryMessage(proposalId);
 
-  // Clear timer
+  // Очищаем таймер
   if (voteTimers.has(proposalId)) {
     clearInterval(voteTimers.get(proposalId));
     voteTimers.delete(proposalId);
@@ -1448,44 +1468,77 @@ async function handleModalSubmit(interaction) {
 }
 
 async function handleProposalModal(interaction) {
+  // Немедленно отвечаем для предотвращения таймаута
   await interaction.deferReply({ flags: 64 });
   
-  const parts = interaction.customId.split("_");
-  const chamber = parts[2];
-  const voteType = parts[3];
-  
-  const name = interaction.fields.getTextInputValue("proj_name");
-  const party = interaction.fields.getTextInputValue("proj_party");
-  const link = interaction.fields.getTextInputValue("proj_link");
-
-  const number = await db.getNextProposalNumber(chamber);
-  const id = nanoid(8);
-  
-  // Создаем начальные события
-  const initialEvents = [{
-    type: 'registration',
-    chamber: chamber,
-    timestamp: Date.now(),
-    description: `Внесение в ${CHAMBER_NAMES[chamber]} (Автор: <@${interaction.user.id}>)`
-  }];
-  
-  const proposal = {
-    id,
-    number,
-    name,
-    party,
-    link,
-    chamber,
-    status: "На рассмотрении",
-    createdAt: Date.now(),
-    authorId: interaction.user.id,
-    threadId: null,
-    channelId: CHAMBER_CHANNELS[chamber],
-    isQuantitative: voteType === 'quantitative',
-    events: initialEvents
-  };
-
   try {
+    const parts = interaction.customId.split("_");
+    const chamber = parts[2];
+    const voteType = parts[3];
+    
+    // ВАЛИДАЦИЯ: проверяем существование палаты
+    if (!CHAMBER_CHANNELS[chamber]) {
+      await interaction.editReply({ 
+        content: "❌ Ошибка конфигурации: указанная палата не найдена." 
+      });
+      return;
+    }
+
+    // ВАЛИДАЦИЯ: проверяем доступ к каналу палаты
+    const forumChannelId = CHAMBER_CHANNELS[chamber];
+    let forumChannel;
+    try {
+      forumChannel = await client.channels.fetch(forumChannelId);
+      if (!forumChannel) {
+        throw new Error("Channel not found");
+      }
+    } catch (channelError) {
+      console.error("❌ Forum channel access error:", channelError);
+      await interaction.editReply({ 
+        content: `❌ Ошибка доступа к каналу палаты. Проверьте настройки бота. (ID: ${forumChannelId})` 
+      });
+      return;
+    }
+
+    const name = interaction.fields.getTextInputValue("proj_name");
+    const party = interaction.fields.getTextInputValue("proj_party");
+    const link = interaction.fields.getTextInputValue("proj_link");
+
+    // ВАЛИДАЦИЯ: проверяем обязательные поля
+    if (!name || !party || !link) {
+      await interaction.editReply({ 
+        content: "❌ Все поля обязательны для заполнения." 
+      });
+      return;
+    }
+
+    const number = await db.getNextProposalNumber(chamber);
+    const id = nanoid(8);
+    
+    // Создаем начальные события
+    const initialEvents = [{
+      type: 'registration',
+      chamber: chamber,
+      timestamp: Date.now(),
+      description: `Внесение в ${CHAMBER_NAMES[chamber]} (Автор: <@${interaction.user.id}>)`
+    }];
+    
+    const proposal = {
+      id,
+      number,
+      name,
+      party,
+      link,
+      chamber,
+      status: "На рассмотрении",
+      createdAt: Date.now(),
+      authorId: interaction.user.id,
+      threadId: null,
+      channelId: forumChannelId,
+      isQuantitative: voteType === 'quantitative',
+      events: initialEvents
+    };
+
     await db.createProposal(proposal);
 
     // Обрабатываем пункты для количественного голосования
@@ -1495,7 +1548,7 @@ async function handleProposalModal(interaction) {
         ? itemsText.split(';')
             .map(item => item.trim())
             .filter(item => item !== '')
-            .slice(0, 5) // Ограничиваем максимум 5 пунктами
+            .slice(0, 5)
         : [];
 
       // Сохраняем пункты количественного голосования
@@ -1508,7 +1561,6 @@ async function handleProposalModal(interaction) {
       }
     }
 
-    const forum = await client.channels.fetch(CHAMBER_CHANNELS[chamber]);
     const embed = new EmbedBuilder()
       .setTitle(`📋 ЗАКОНОПРОЕКТ ${number}${voteType === 'quantitative' ? ' (Рейтинговое голосование)' : ''}`)
       .setDescription(`Зарегистрирован новый законопроект${voteType === 'quantitative' ? ' с рейтинговым голосованием' : ''}`)
@@ -1524,7 +1576,7 @@ async function handleProposalModal(interaction) {
       .setFooter({ text: FOOTER })
       .setTimestamp();
 
-    const threadMessage = await forum.threads.create({
+    const threadMessage = await forumChannel.threads.create({
       name: `${number} — ${name.substring(0, 50)}${name.length > 50 ? '...' : ''}`,
       appliedTags: [FORUM_TAGS.ON_REVIEW],
       message: {
@@ -1571,10 +1623,14 @@ async function handleProposalModal(interaction) {
       }
     }
     
-    await interaction.editReply({ content: `✅ Законопроект зарегистрирован: ${threadMessage.url}` });
-  } catch (e) {
-    console.error("❌ Error creating forum thread:", e);
-    await interaction.editReply({ content: "❌ Ошибка при создании темы в форуме — проверь права бота и ID форума." });
+    await interaction.editReply({ 
+      content: `✅ Законопроект успешно зарегистрирован: ${threadMessage.url}` 
+    });
+  } catch (error) {
+    console.error("❌ Critical error in handleProposalModal:", error);
+    await interaction.editReply({ 
+      content: "❌ Критическая ошибка при создании законопроекта. Проверьте настройки бота и права доступа." 
+    });
   }
 }
 
@@ -2011,76 +2067,136 @@ async function handleRejectLateModal(interaction) {
 
 // ================== BUTTON HANDLERS ==================
 
+// ================== OPTIMIZED BUTTON HANDLER ==================
 async function handleButton(interaction) {
   const cid = interaction.customId;
 
-  // Meeting registration
-  if (cid.startsWith("get_card_")) {
-    await handleGetCardButton(interaction);
-  }
-  // Clear roles button
-  else if (cid.startsWith("clear_roles_")) {
-    await handleClearRolesButton(interaction);
-  }
-  // Late registration button
-  else if (cid.startsWith("late_registration_")) {
-    await handleLateRegistrationButton(interaction);
-  }
-  // Approve late registration
-  else if (cid.startsWith("approve_late_")) {
-    await handleApproveLateButton(interaction);
-  }
-  // Reject late registration
-  else if (cid.startsWith("reject_late_")) {
-    await handleRejectLateButton(interaction);
-  }
-  // Start registration button for meeting
-  else if (cid.startsWith("start_registration_")) {
-    await handleStartRegistrationButton(interaction);
-  }
-  // Cancel meeting button
-  else if (cid.startsWith("cancel_meeting_")) {
-    await handleCancelMeetingButton(interaction);
-  }
-  // Postpone meeting button
-  else if (cid.startsWith("postpone_meeting_")) {
-    await handlePostponeMeetingButton(interaction);
-  }
-  // Start vote button
-  else if (cid.startsWith("start_vote_")) {
-    await handleStartVoteButton(interaction);
-  }
-  // End vote button
-  else if (cid.startsWith("end_vote_")) {
-    await handleEndVoteButton(interaction);
-  }
-  // Register speaker button
-  else if (cid.startsWith("register_speaker_")) {
-    await handleRegisterSpeakerButton(interaction);
-  }
-  // Delete proposal button
-  else if (cid.startsWith("delete_proposal_")) {
-    await handleDeleteProposalButton(interaction);
-  }
-  // Government approval buttons
-  else if (cid.startsWith("gov_approve_") || cid.startsWith("gov_return_")) {
-    await handleGovernmentButtons(interaction);
-  }
-  // President actions
-  else if (cid.startsWith("president_sign_") || cid.startsWith("president_veto_")) {
-    await handlePresidentButtons(interaction);
-  }
-  // Vote buttons for regular voting
-  else if (cid.startsWith("vote_for_") || cid.startsWith("vote_against_") || cid.startsWith("vote_abstain_")) {
-    await handleRegularVoteButtons(interaction);
-  }
-  // Vote buttons for quantitative voting
-  else if (cid.startsWith("vote_item_")) {
-    await handleQuantitativeVoteButtons(interaction);
-  }
-  // Abstain button for quantitative voting
-  else if (cid.startsWith("vote_abstain_") && !cid.includes("_against_") && !cid.includes("_for_")) {
-    await handleQuantitativeAbstainButton(interaction);
+  try {
+    // БЫСТРАЯ ОБРАБОТКА ГОЛОСОВАНИЙ (самые частые запросы)
+    if (cid.startsWith("vote_")) {
+      if (cid.startsWith("vote_for_") || cid.startsWith("vote_against_") || cid.startsWith("vote_abstain_")) {
+        await handleRegularVoteButtons(interaction);
+        return;
+      }
+      if (cid.startsWith("vote_item_")) {
+        await handleQuantitativeVoteButtons(interaction);
+        return;
+      }
+      if (cid.startsWith("vote_abstain_") && !cid.includes("_against_") && !cid.includes("_for_")) {
+        await handleQuantitativeAbstainButton(interaction);
+        return;
+      }
+    }
+
+    // Meeting registration (частые запросы)
+    if (cid.startsWith("get_card_")) {
+      await handleGetCardButton(interaction);
+      return;
+    }
+
+    // Clear roles button
+    if (cid.startsWith("clear_roles_")) {
+      await handleClearRolesButton(interaction);
+      return;
+    }
+
+    // Late registration button
+    if (cid.startsWith("late_registration_")) {
+      await handleLateRegistrationButton(interaction);
+      return;
+    }
+
+    // Approve late registration
+    if (cid.startsWith("approve_late_")) {
+      await handleApproveLateButton(interaction);
+      return;
+    }
+
+    // Reject late registration
+    if (cid.startsWith("reject_late_")) {
+      await handleRejectLateButton(interaction);
+      return;
+    }
+
+    // Start registration button for meeting
+    if (cid.startsWith("start_registration_")) {
+      await handleStartRegistrationButton(interaction);
+      return;
+    }
+
+    // Cancel meeting button
+    if (cid.startsWith("cancel_meeting_")) {
+      await handleCancelMeetingButton(interaction);
+      return;
+    }
+
+    // Postpone meeting button
+    if (cid.startsWith("postpone_meeting_")) {
+      await handlePostponeMeetingButton(interaction);
+      return;
+    }
+
+    // Start vote button
+    if (cid.startsWith("start_vote_")) {
+      await handleStartVoteButton(interaction);
+      return;
+    }
+
+    // End vote button
+    if (cid.startsWith("end_vote_")) {
+      await handleEndVoteButton(interaction);
+      return;
+    }
+
+    // Register speaker button
+    if (cid.startsWith("register_speaker_")) {
+      await handleRegisterSpeakerButton(interaction);
+      return;
+    }
+
+    // Delete proposal button
+    if (cid.startsWith("delete_proposal_")) {
+      await handleDeleteProposalButton(interaction);
+      return;
+    }
+
+    // Government approval buttons
+    if (cid.startsWith("gov_approve_") || cid.startsWith("gov_return_")) {
+      await handleGovernmentButtons(interaction);
+      return;
+    }
+
+    // President actions
+    if (cid.startsWith("president_sign_") || cid.startsWith("president_veto_")) {
+      await handlePresidentButtons(interaction);
+      return;
+    }
+
+    // Если не найдено подходящего обработчика
+    console.warn(`⚠️ Unknown button interaction: ${cid}`);
+    await safeReply(interaction, "❌ Неизвестная команда или действие устарело.");
+
+  } catch (error) {
+    console.error("❌ Error in handleButton:", error);
+    
+    // УЛУЧШЕННАЯ ОБРАБОТКА ОШИБОК
+    try {
+      if (interaction.replied || interaction.deferred) {
+        // Если уже ответили, пытаемся отредактировать
+        await interaction.editReply({ 
+          content: "❌ Произошла ошибка при обработке действия." 
+        });
+      } else {
+        // Если не ответили, отправляем новый ответ
+        await interaction.reply({ 
+          content: "❌ Произошла ошибка при обработке действия.", 
+          flags: 64 
+        });
+      }
+    } catch (replyError) {
+      // Если даже отправка ошибки не удалась, просто логируем
+      console.error("❌ Could not send error message:", replyError);
+    }
   }
 }
 
@@ -2929,110 +3045,105 @@ async function handlePresidentButtons(interaction) {
   }
 }
 
+// ================== OPTIMIZED VOTE HANDLERS ==================
+
 async function handleRegularVoteButtons(interaction) {
-  // ПРОВЕРКА: если уже ответили, выходим
-  if (interaction.replied || interaction.deferred) return;
+  // НЕМЕДЛЕННО отвечаем для предотвращения таймаута
+  if (!interaction.replied && !interaction.deferred) {
+    await interaction.deferReply({ flags: 64 });
+  }
   
   const parts = interaction.customId.split("_");
-  const kind = parts[1];
-  const pid = parts.slice(2).join("_");
+  const voteType = parts[1];
+  const proposalId = parts.slice(2).join("_");
   
   try {
-    // Ищем предложение
-    const proposal = await db.getProposal(pid);
+    // Быстрая проверка предложения
+    const proposal = await db.getProposal(proposalId);
     if (!proposal) {
-      await safeReply(interaction, "❌ Законопроект не найден.");
+      await interaction.editReply({ content: "❌ Законопроект не найден." });
       return;
     }
     
-    // Ищем ЛЮБОЕ заседание для этой палаты (не только активное)
-    const allMeetings = await db.getAllMeetings();
-    const chamberMeeting = allMeetings.find(m => m.chamber === proposal.chamber && m.status === 'completed');
-    
-    if (!chamberMeeting) {
-      await safeReply(interaction, "❌ Не найдено завершенное заседание для этой палаты.");
-      return;
-    }
-    
+    // Быстрая проверка роли голосования
     const voterRoleId = VOTER_ROLES_BY_CHAMBER[proposal.chamber];
-    const member = interaction.member;
-    if (!member.roles.cache.has(voterRoleId)) {
-      await safeReply(interaction, "❌ У вас нет роли для голосования.");
+    if (!interaction.member.roles.cache.has(voterRoleId)) {
+      await interaction.editReply({ content: "❌ У вас нет роли для голосования в этой палате." });
       return;
     }
     
-    const voting = await db.getVoting(pid);
-    
+    // Быстрая проверка активного голосования
+    const voting = await db.getVoting(proposalId);
     if (!voting?.open) {
-      await safeReply(interaction, "❌ Голосование не активно.");
+      await interaction.editReply({ content: "❌ Голосование не активно или завершено." });
       return;
     }
     
+    // Быстрое обновление голоса
     const vote = {
-      proposalId: pid,
+      proposalId: proposalId,
       userId: interaction.user.id,
-      voteType: kind,
+      voteType: voteType,
       createdAt: Date.now(),
       stage: voting.stage || 1
     };
     
     await db.addVote(vote);
-
-    await safeReply(interaction, `✅ Ваш голос учтен`);
+    await interaction.editReply({ 
+      content: `✅ Ваш голос "${getVoteTypeText(voteType)}" учтен!` 
+    });
+    
   } catch (error) {
     console.error("❌ Error in regular vote button:", error);
-    await safeReply(interaction, "❌ Ошибка при голосовании.");
+    try {
+      await interaction.editReply({ content: "❌ Ошибка при обработке голоса." });
+    } catch (e) {
+      // Игнорируем, если уже ответили
+    }
   }
 }
 
-
 async function handleQuantitativeVoteButtons(interaction) {
-  // ПРОВЕРКА: если уже ответили, выходим
-  if (interaction.replied || interaction.deferred) return;
+  // НЕМЕДЛЕННО отвечаем для предотвращения таймаута
+  if (!interaction.replied && !interaction.deferred) {
+    await interaction.deferReply({ flags: 64 });
+  }
   
   const parts = interaction.customId.split("_");
   const itemIndex = parts[2];
-  const pid = parts.slice(3).join("_");
+  const proposalId = parts.slice(3).join("_");
   
   try {
-    // Ищем предложение
-    const proposal = await db.getProposal(pid);
+    // Быстрая проверка предложения
+    const proposal = await db.getProposal(proposalId);
     if (!proposal) {
-      await safeReply(interaction, "❌ Законопроект не найден.");
+      await interaction.editReply({ content: "❌ Законопроект не найден." });
       return;
     }
     
-    // Ищем ЛЮБОЕ заседание для этой палаты (не только активное)
-    const allMeetings = await db.getAllMeetings();
-    const chamberMeeting = allMeetings.find(m => m.chamber === proposal.chamber && m.status === 'completed');
-    
-    if (!chamberMeeting) {
-      await safeReply(interaction, "❌ Не найдено завершенное заседание для этой палаты.");
-      return;
-    }
-    
+    // Быстрая проверка роли голосования
     const voterRoleId = VOTER_ROLES_BY_CHAMBER[proposal.chamber];
-    const member = interaction.member;
-    if (!member.roles.cache.has(voterRoleId)) {
-      await safeReply(interaction, "❌ У вас нет роли для голосования.");
+    if (!interaction.member.roles.cache.has(voterRoleId)) {
+      await interaction.editReply({ content: "❌ У вас нет роли для голосования в этой палате." });
       return;
     }
     
-    const voting = await db.getVoting(pid);
-    
+    // Быстрая проверка активного голосования
+    const voting = await db.getVoting(proposalId);
     if (!voting?.open) {
-      await safeReply(interaction, "❌ Голосование не активно.");
+      await interaction.editReply({ content: "❌ Голосование не активно или завершено." });
       return;
     }
     
     // Проверяем, что это количественное голосование
     if (!proposal.isquantitative) {
-      await safeReply(interaction, "❌ Это не количественное голосование.");
+      await interaction.editReply({ content: "❌ Это не количественное голосование." });
       return;
     }
     
+    // Быстрое обновление голоса
     const vote = {
-      proposalId: pid,
+      proposalId: proposalId,
       userId: interaction.user.id,
       voteType: `item_${itemIndex}`,
       createdAt: Date.now(),
@@ -3040,59 +3151,59 @@ async function handleQuantitativeVoteButtons(interaction) {
     };
     
     await db.addVote(vote);
-
-    await safeReply(interaction, `✅ Ваш голос учтен за пункт ${itemIndex}`);
+    await interaction.editReply({ 
+      content: `✅ Ваш голос за пункт ${itemIndex} учтен!` 
+    });
+    
   } catch (error) {
     console.error("❌ Error in quantitative vote button:", error);
-    await safeReply(interaction, "❌ Ошибка при голосовании.");
+    try {
+      await interaction.editReply({ content: "❌ Ошибка при обработке голоса." });
+    } catch (e) {
+      // Игнорируем, если уже ответили
+    }
   }
 }
 
 async function handleQuantitativeAbstainButton(interaction) {
-  // ПРОВЕРКА: если уже ответили, выходим
-  if (interaction.replied || interaction.deferred) return;
+  // НЕМЕДЛЕННО отвечаем для предотвращения таймаута
+  if (!interaction.replied && !interaction.deferred) {
+    await interaction.deferReply({ flags: 64 });
+  }
   
-  const pid = interaction.customId.split("vote_abstain_")[1];
+  const proposalId = interaction.customId.split("vote_abstain_")[1];
   
   try {
-    // Ищем предложение
-    const proposal = await db.getProposal(pid);
+    // Быстрая проверка предложения
+    const proposal = await db.getProposal(proposalId);
     if (!proposal) {
-      await safeReply(interaction, "❌ Законопроект не найден.");
+      await interaction.editReply({ content: "❌ Законопроект не найден." });
       return;
     }
     
-    // Ищем ЛЮБОЕ заседание для этой палаты (не только активное)
-    const allMeetings = await db.getAllMeetings();
-    const chamberMeeting = allMeetings.find(m => m.chamber === proposal.chamber && m.status === 'completed');
-    
-    if (!chamberMeeting) {
-      await safeReply(interaction, "❌ Не найдено завершенное заседание для этой палаты.");
-      return;
-    }
-    
+    // Быстрая проверка роли голосования
     const voterRoleId = VOTER_ROLES_BY_CHAMBER[proposal.chamber];
-    const member = interaction.member;
-    if (!member.roles.cache.has(voterRoleId)) {
-      await safeReply(interaction, "❌ У вас нет роли для голосования.");
+    if (!interaction.member.roles.cache.has(voterRoleId)) {
+      await interaction.editReply({ content: "❌ У вас нет роли для голосования в этой палате." });
       return;
     }
     
-    const voting = await db.getVoting(pid);
-    
+    // Быстрая проверка активного голосования
+    const voting = await db.getVoting(proposalId);
     if (!voting?.open) {
-      await safeReply(interaction, "❌ Голосование не активно.");
+      await interaction.editReply({ content: "❌ Голосование не активно или завершено." });
       return;
     }
     
     // Проверяем, что это количественное голосование
     if (!proposal.isquantitative) {
-      await safeReply(interaction, "❌ Ошибка голосования (неверный тип).");
+      await interaction.editReply({ content: "❌ Ошибка голосования (неверный тип)." });
       return;
     }
     
+    // Быстрое обновление голоса
     const vote = {
-      proposalId: pid,
+      proposalId: proposalId,
       userId: interaction.user.id,
       voteType: 'abstain',
       createdAt: Date.now(),
@@ -3100,11 +3211,27 @@ async function handleQuantitativeAbstainButton(interaction) {
     };
     
     await db.addVote(vote);
-
-    await safeReply(interaction, `✅ Ваш голос учтен (воздержались)`);
+    await interaction.editReply({ 
+      content: `✅ Ваш голос (воздержались) учтен!` 
+    });
+    
   } catch (error) {
     console.error("❌ Error in quantitative abstain button:", error);
-    await safeReply(interaction, "❌ Ошибка при голосовании.");
+    try {
+      await interaction.editReply({ content: "❌ Ошибка при обработке голоса." });
+    } catch (e) {
+      // Игнорируем, если уже ответили
+    }
+  }
+}
+
+// Вспомогательная функция для текста голоса
+function getVoteTypeText(voteType) {
+  switch(voteType) {
+    case 'for': return 'ЗА';
+    case 'against': return 'ПРОТИВ';
+    case 'abstain': return 'ВОЗДЕРЖАЛСЯ';
+    default: return voteType;
   }
 }
 
