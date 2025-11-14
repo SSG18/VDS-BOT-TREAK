@@ -31,7 +31,7 @@ import {
 import db from "./database.js";
 
 /* ================== CONFIG ================== */
-/*const TOKEN = process.env.DISCORD_TOKEN;
+const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
@@ -98,7 +98,7 @@ const FORUM_TAGS = {
 };
 
 const ADMIN_ROLE_SEND_ID = process.env.ADMIN_ROLE_SEND_ID;
-const SYSADMIN_ROLE_ID = process.env.SYSADMIN_ROLE_ID;*/ 
+const SYSADMIN_ROLE_ID = process.env.SYSADMIN_ROLE_ID; 
 
 // ================== CONFIG VALIDATION ==================
 function validateConfig() {
