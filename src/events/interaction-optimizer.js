@@ -55,11 +55,17 @@ export class InteractionOptimizer {
     }
 
     try {
-      const response = await interaction.reply({ 
-        content, 
-        flags: 64, // Ephemeral
-        ...options 
-      });
+      let replyData;
+      
+      // Если content - объект (с content и components), используем его как есть
+      if (typeof content === 'object' && content !== null) {
+        replyData = { ...content, flags: 64 }; // Добавляем ephemeral флаг
+      } else {
+        // Если content - строка, создаем объект с content
+        replyData = { content, flags: 64, ...options };
+      }
+
+      const response = await interaction.reply(replyData);
       
       // Удаляем сообщение через 7 секунд
       setTimeout(async () => {
