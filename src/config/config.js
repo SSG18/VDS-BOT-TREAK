@@ -118,6 +118,7 @@ export const EVENT_EMOJIS = {
   'transfer': '🔄',
   'default': '📌'
 };
+export const FORUM_TAGS = CONFIG.FORUM_TAGS;
 
 // Валидация конфигурации
 export function validateConfig() {
