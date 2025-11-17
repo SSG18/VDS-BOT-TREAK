@@ -1,4 +1,4 @@
-import { CONFIG, CHAMBER_CHAIRMAN_ROLES, CHANNEL_TO_CHAMBER, CHAMBER_NAMES } from '../config/config.js';
+import { CONFIG, CHANNEL_TO_CHAMBER, CHAMBER_NAMES, getChamberChairmanRoles } from '../config/config.js';
 
 // Функция проверки прав администратора
 export function isAdmin(member) {
@@ -7,7 +7,7 @@ export function isAdmin(member) {
 
 // Функция проверки прав председателя для палаты
 export function isChamberChairman(member, chamber) {
-  const requiredRoles = CHAMBER_CHAIRMAN_ROLES[chamber];
+  const requiredRoles = getChamberChairmanRoles()[chamber];
   if (!requiredRoles) return false;
   return requiredRoles.some(roleId => member.roles.cache.has(roleId));
 }
