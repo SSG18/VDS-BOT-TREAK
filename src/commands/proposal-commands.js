@@ -1,6 +1,6 @@
 import { StringSelectMenuBuilder, ActionRowBuilder } from 'discord.js';
 import { getAvailableChambers } from '../utils/permissions.js';
-import interactionOptimizer from '../events/interaction-optimizer.js';
+import interactionOptimizer from '../events/interaction-optimizer.js'; // Импорт синглтона
 
 export async function sendCommand(interaction) {
   const availableChambers = getAvailableChambers(interaction.member);
