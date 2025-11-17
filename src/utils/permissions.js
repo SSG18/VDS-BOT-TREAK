@@ -1,4 +1,4 @@
-import { CONFIG, CHAMBER_CHAIRMAN_ROLES, CHANNEL_TO_CHAMBER } from '../config/config.js';
+import { CONFIG, CHAMBER_CHAIRMAN_ROLES, CHANNEL_TO_CHAMBER, CHAMBER_NAMES } from '../config/config.js';
 
 // Функция проверки прав администратора
 export function isAdmin(member) {
