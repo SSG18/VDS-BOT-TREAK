@@ -1,6 +1,6 @@
 import { StringSelectMenuBuilder, ActionRowBuilder } from 'discord.js';
 import { getAvailableChambers } from '../utils/permissions.js';
-import interactionOptimizer from '../events/interaction-optimizer.js'; // Импорт синглтона
+import interactionOptimizer from '../events/interaction-optimizer.js';
 
 export async function sendCommand(interaction) {
   const availableChambers = getAvailableChambers(interaction.member);
@@ -22,6 +22,7 @@ export async function sendCommand(interaction) {
 
   const row = new ActionRowBuilder().addComponents(selectMenu);
 
+  // ФИКС: Явно передаем объект с полем content как строку
   await interactionOptimizer.safeReply(interaction, {
     content: '📋 Выберите палату для внесения законопроекта:',
     components: [row]
