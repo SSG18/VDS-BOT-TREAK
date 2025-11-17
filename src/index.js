@@ -43,8 +43,8 @@ async function initializeApp() {
     // Запуск бота
     await client.login(process.env.DISCORD_TOKEN);
     
-    // Восстановление таймеров после готовности
-    client.once('ready', async () => {
+    // Восстановление таймеров после готовности (исправлено событие)
+    client.once('clientReady', async () => {
       logger.info(`✅ Bot ready: ${client.user.tag}`);
       await restoreAllTimers();
     });
