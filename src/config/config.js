@@ -80,14 +80,16 @@ export const CHAMBER_NAMES = {
   'gd_tverskoy': 'Государственная дума | Тверской'
 };
 
-// Маппинг палат на роли председателей
-export const CHAMBER_CHAIRMAN_ROLES = {
-  'sf': [CONFIG.ROLES.CHAIRMAN, CONFIG.ROLES.VICE_CHAIRMAN],
-  'gd_rublevka': [CONFIG.ROLES.CHAIRMAN, CONFIG.ROLES.VICE_CHAIRMAN, CONFIG.ROLES.RUBLEVKA],
-  'gd_arbat': [CONFIG.ROLES.CHAIRMAN, CONFIG.ROLES.VICE_CHAIRMAN, CONFIG.ROLES.ARBAT],
-  'gd_patricki': [CONFIG.ROLES.CHAIRMAN, CONFIG.ROLES.VICE_CHAIRMAN, CONFIG.ROLES.PATRICKI],
-  'gd_tverskoy': [CONFIG.ROLES.CHAIRMAN, CONFIG.ROLES.VICE_CHAIRMAN, CONFIG.ROLES.TVERSKOY]
-};
+// Функция для получения ролей председателей (исправляет циклическую зависимость)
+export function getChamberChairmanRoles() {
+  return {
+    'sf': [CONFIG.ROLES.CHAIRMAN, CONFIG.ROLES.VICE_CHAIRMAN],
+    'gd_rublevka': [CONFIG.ROLES.CHAIRMAN, CONFIG.ROLES.VICE_CHAIRMAN, CONFIG.ROLES.RUBLEVKA],
+    'gd_arbat': [CONFIG.ROLES.CHAIRMAN, CONFIG.ROLES.VICE_CHAIRMAN, CONFIG.ROLES.ARBAT],
+    'gd_patricki': [CONFIG.ROLES.CHAIRMAN, CONFIG.ROLES.VICE_CHAIRMAN, CONFIG.ROLES.PATRICKI],
+    'gd_tverskoy': [CONFIG.ROLES.CHAIRMAN, CONFIG.ROLES.VICE_CHAIRMAN, CONFIG.ROLES.TVERSKOY]
+  };
+}
 
 // Маппинг ID каналов заседаний на палаты
 export const CHANNEL_TO_CHAMBER = Object.fromEntries(
@@ -118,6 +120,7 @@ export const EVENT_EMOJIS = {
   'transfer': '🔄',
   'default': '📌'
 };
+
 export const FORUM_TAGS = CONFIG.FORUM_TAGS;
 
 // Валидация конфигурации
