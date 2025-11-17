@@ -168,9 +168,9 @@ async function handleProposalModal(interaction) {
       }
     }
     
-    await interactionOptimizer.safeEditReply(interaction, { 
-      content: `✅ Законопроект успешно зарегистрирован: ${threadMessage.url}` 
-    });
+    const successMessage = `✅ Законопроект успешно зарегистрирован: ${threadMessage.url}`;
+    await interactionOptimizer.safeEditReply(interaction, successMessage);
+    
   } catch (error) {
     console.error("❌ Critical error in handleProposalModal:", error);
     await interactionOptimizer.safeEditReply(interaction, { 
