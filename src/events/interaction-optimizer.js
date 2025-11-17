@@ -74,7 +74,7 @@ export class InteractionOptimizer {
         } catch (error) {
           // Игнорируем ошибки удаления (например, если сообщение уже удалено)
         }
-      }, 7000);
+      }, 15000);
       
       return response;
     } catch (error) {
@@ -98,7 +98,7 @@ export class InteractionOptimizer {
         } catch (error) {
           // Игнорируем ошибки удаления
         }
-      }, 7000);
+      }, 15000);
       
       return response;
     } catch (error) {
@@ -122,7 +122,7 @@ export class InteractionOptimizer {
           } catch (error) {
             // Игнорируем ошибки удаления
           }
-        }, 7000);
+        }, 15000);
       }
       
       return response;
@@ -146,3 +146,4 @@ export class InteractionOptimizer {
 }
 
 export default new InteractionOptimizer();
+
