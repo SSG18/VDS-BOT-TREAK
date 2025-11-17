@@ -49,20 +49,51 @@ export class InteractionOptimizer {
     return userLimit.count > 5; // Максимум 5 запросов в 10 секунд
   }
 
+  // Универсальная функция для безопасного преобразования контента в строку
+  #ensureStringContent(content) {
+    if (typeof content === 'string') {
+      return content;
+    }
+    
+    if (typeof content === 'object' && content !== null) {
+      // Если это объект с полем content, используем его
+      if (content.content && typeof content.content === 'string') {
+        return content.content;
+      }
+      // Если это embed или другой объект, преобразуем в строку
+      return JSON.stringify(content);
+    }
+    
+    // Для других типов (числа, булевы значения и т.д.)
+    return String(content);
+  }
+
+  // Создание безопасного объекта для ответа
+  #createSafeReplyData(content, options = {}) {
+    const baseData = { flags: 64, ...options }; // Добавляем ephemeral флаг
+    
+    if (typeof content === 'object' && content !== null) {
+      // Если content - объект с полями для ответа, используем его
+      if (content.content || content.embeds || content.components) {
+        return { ...baseData, ...content };
+      }
+    }
+    
+    // Если content - строка или примитив, используем как content
+    return { ...baseData, content: this.#ensureStringContent(content) };
+  }
+
   async safeReply(interaction, content, options = {}) {
     if (interaction.replied || interaction.deferred) {
       return null;
     }
 
     try {
-      let replyData;
+      const replyData = this.#createSafeReplyData(content, options);
       
-      // Если content - объект (с content и components), используем его как есть
-      if (typeof content === 'object' && content !== null) {
-        replyData = { ...content, flags: 64 }; // Добавляем ephemeral флаг
-      } else {
-        // Если content - строка, создаем объект с content
-        replyData = { content, flags: 64, ...options };
+      // Гарантируем, что content является строкой
+      if (replyData.content) {
+        replyData.content = this.#ensureStringContent(replyData.content);
       }
 
       const response = await interaction.reply(replyData);
@@ -74,7 +105,7 @@ export class InteractionOptimizer {
         } catch (error) {
           // Игнорируем ошибки удаления (например, если сообщение уже удалено)
         }
-      }, 15000);
+      }, 7000);
       
       return response;
     } catch (error) {
@@ -85,11 +116,14 @@ export class InteractionOptimizer {
 
   async safeFollowUp(interaction, content, options = {}) {
     try {
-      const response = await interaction.followUp({ 
-        content, 
-        flags: 64, // Ephemeral
-        ...options 
-      });
+      const followUpData = this.#createSafeReplyData(content, options);
+      
+      // Гарантируем, что content является строкой
+      if (followUpData.content) {
+        followUpData.content = this.#ensureStringContent(followUpData.content);
+      }
+
+      const response = await interaction.followUp(followUpData);
       
       // Удаляем сообщение через 7 секунд
       setTimeout(async () => {
@@ -98,7 +132,7 @@ export class InteractionOptimizer {
         } catch (error) {
           // Игнорируем ошибки удаления
         }
-      }, 15000);
+      }, 7000);
       
       return response;
     } catch (error) {
@@ -109,10 +143,22 @@ export class InteractionOptimizer {
 
   async safeEditReply(interaction, content, options = {}) {
     try {
-      const response = await interaction.editReply({ 
-        content, 
-        ...options 
-      });
+      let editData;
+      
+      if (typeof content === 'object' && content !== null) {
+        // Если content - объект с полями для редактирования
+        editData = { ...content, ...options };
+      } else {
+        // Если content - строка или примитив
+        editData = { content: this.#ensureStringContent(content), ...options };
+      }
+      
+      // Гарантируем, что content является строкой
+      if (editData.content) {
+        editData.content = this.#ensureStringContent(editData.content);
+      }
+
+      const response = await interaction.editReply(editData);
       
       // Если это ephemeral сообщение, удаляем через 7 секунд
       if (interaction.ephemeral) {
@@ -122,7 +168,7 @@ export class InteractionOptimizer {
           } catch (error) {
             // Игнорируем ошибки удаления
           }
-        }, 15000);
+        }, 7000);
       }
       
       return response;
@@ -134,10 +180,12 @@ export class InteractionOptimizer {
 
   async handleError(interaction, error) {
     try {
+      const errorMessage = '❌ Произошла ошибка при обработке запроса.';
+      
       if (interaction.replied || interaction.deferred) {
-        await this.safeFollowUp(interaction, '❌ Произошла ошибка при обработке запроса.');
+        await this.safeFollowUp(interaction, errorMessage);
       } else {
-        await this.safeReply(interaction, '❌ Произошла ошибка при обработке запроса.');
+        await this.safeReply(interaction, errorMessage);
       }
     } catch (replyError) {
       logger.error('Could not send error message:', replyError);
@@ -146,4 +194,3 @@ export class InteractionOptimizer {
 }
 
 export default new InteractionOptimizer();
-
