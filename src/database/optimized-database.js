@@ -10,14 +10,16 @@ class OptimizedCongressDatabase {
       host: process.env.DB_HOST || 'localhost',
       database: process.env.DB_NAME || 'congress_bot',
       password: process.env.DB_PASSWORD,
-      port: process.env.DB_PORT || 5432,
+      port: parseInt(process.env.DB_PORT) || 5432,
       max: 20,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
     });
 
     this.queryCache = new Map();
-    this.init().catch(logger.error);
+    this.init().catch(error => {
+      logger.error('Database initialization error:', error?.message || error);
+    });
   }
 
   async init() {
@@ -26,12 +28,15 @@ class OptimizedCongressDatabase {
       await this.createIndexes();
       logger.info('✅ Database initialized successfully');
     } catch (error) {
-      logger.error('Database initialization failed:', error);
-      throw error;
+      if (error.code === '23505' || error.message?.includes('already exists')) {
+        logger.info('ℹ️ Database tables already exist, continuing...');
+      } else {
+        logger.error('Database initialization failed:', error);
+        throw error;
+      }
     }
   }
 
-  // Оптимизированный метод запросов с кэшированием
   async query(text, params, useCache = false, ttl = 60000) {
     const cacheKey = useCache ? `${text}:${JSON.stringify(params)}` : null;
     
@@ -47,7 +52,7 @@ class OptimizedCongressDatabase {
       const res = await this.pool.query(text, params);
       const duration = Date.now() - start;
       
-      if (duration > 1000) {
+      if (duration > 5000 && !text.includes('CREATE TABLE') && !text.includes('CREATE INDEX')) {
         logger.warn(`Slow query (${duration}ms):`, text.substring(0, 100));
       }
 
@@ -60,23 +65,22 @@ class OptimizedCongressDatabase {
 
       return res;
     } catch (error) {
-      logger.error('Query error:', error, text, params);
+      if (error.code === '23505' || error.message?.includes('already exists')) {
+        return { rows: [], rowCount: 0 };
+      }
+      logger.error('Query error:', error.message, text.substring(0, 200));
       throw error;
     }
   }
 
   async createTables() {
-    // Таблица для счетчиков предложений по палатам
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS chamber_counters (
+    try {
+      await this.query(`CREATE TABLE IF NOT EXISTS chamber_counters (
         chamberId TEXT PRIMARY KEY,
         value INTEGER NOT NULL DEFAULT 1
-      )
-    `);
+      )`);
 
-    // Таблица для предложений
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS proposals (
+      await this.query(`CREATE TABLE IF NOT EXISTS proposals (
         id TEXT PRIMARY KEY,
         number TEXT NOT NULL,
         name TEXT NOT NULL,
@@ -95,23 +99,17 @@ class OptimizedCongressDatabase {
         parentProposalId TEXT,
         events JSONB DEFAULT '[]'::JSONB,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+      )`);
 
-    // Таблица для пунктов количественного голосования
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS quantitative_items (
+      await this.query(`CREATE TABLE IF NOT EXISTS quantitative_items (
         id SERIAL PRIMARY KEY,
         proposalId TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
         itemIndex INTEGER NOT NULL,
         text TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+      )`);
 
-    // Таблица для информации о голосованиях
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS votings (
+      await this.query(`CREATE TABLE IF NOT EXISTS votings (
         proposalId TEXT PRIMARY KEY REFERENCES proposals(id) ON DELETE CASCADE,
         open BOOLEAN NOT NULL DEFAULT FALSE,
         startedAt BIGINT,
@@ -124,12 +122,9 @@ class OptimizedCongressDatabase {
         stage INTEGER DEFAULT 1,
         runoffMessageId TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+      )`);
 
-    // Таблица для голосов
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS votes (
+      await this.query(`CREATE TABLE IF NOT EXISTS votes (
         id SERIAL PRIMARY KEY,
         proposalId TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
         userId TEXT NOT NULL,
@@ -138,12 +133,9 @@ class OptimizedCongressDatabase {
         stage INTEGER DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(proposalId, userId, stage)
-      )
-    `);
+      )`);
 
-    // Таблица для встреч
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS meetings (
+      await this.query(`CREATE TABLE IF NOT EXISTS meetings (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         chamber TEXT NOT NULL,
@@ -159,23 +151,17 @@ class OptimizedCongressDatabase {
         totalMembers INTEGER DEFAULT 53,
         status TEXT DEFAULT 'planned',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+      )`);
 
-    // Таблица для регистраций на встречи
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS meeting_registrations (
+      await this.query(`CREATE TABLE IF NOT EXISTS meeting_registrations (
         meetingId TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
         userId TEXT NOT NULL,
         registeredAt BIGINT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (meetingId, userId)
-      )
-    `);
+      )`);
 
-    // Таблица для выступающих
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS speakers (
+      await this.query(`CREATE TABLE IF NOT EXISTS speakers (
         id SERIAL PRIMARY KEY,
         proposalId TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
         userId TEXT NOT NULL,
@@ -183,26 +169,26 @@ class OptimizedCongressDatabase {
         displayName TEXT NOT NULL,
         registeredAt BIGINT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+      )`);
 
-    // Таблица для настроек бота
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS bot_settings (
+      await this.query(`CREATE TABLE IF NOT EXISTS bot_settings (
         key TEXT PRIMARY KEY,
         value TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+      )`);
 
-    // Инициализация счетчиков для каждой палаты
-    const chambers = ['sf', 'gd_rublevka', 'gd_arbat', 'gd_patricki', 'gd_tverskoy'];
-    for (const chamber of chambers) {
-      await this.query(`
-        INSERT INTO chamber_counters (chamberId, value) 
-        VALUES ($1, 1) 
-        ON CONFLICT (chamberId) DO NOTHING
-      `, [chamber]);
+      const chambers = ['sf', 'gd_rublevka', 'gd_arbat', 'gd_patricki', 'gd_tverskoy'];
+      for (const chamber of chambers) {
+        await this.query(`
+          INSERT INTO chamber_counters (chamberId, value) 
+          VALUES ($1, 1) 
+          ON CONFLICT (chamberId) DO NOTHING
+        `, [chamber]).catch(() => {});
+      }
+    } catch (error) {
+      if (!error.message?.includes('already exists')) {
+        throw error;
+      }
     }
   }
 
@@ -221,11 +207,16 @@ class OptimizedCongressDatabase {
     ];
 
     for (const indexSql of indexes) {
-      await this.query(indexSql);
+      try {
+        await this.query(indexSql);
+      } catch (error) {
+        if (!error.message?.includes('already exists')) {
+          logger.warn('Failed to create index:', error.message);
+        }
+      }
     }
   }
 
-  // Методы для работы с предложениями
   async getNextProposalNumber(chamber) {
     try {
       let result = await this.query(
@@ -373,7 +364,6 @@ class OptimizedCongressDatabase {
     await this.query('DELETE FROM proposals WHERE id = $1', [id], false);
   }
 
-  // Методы для работы с пунктами количественного голосования
   async addQuantitativeItem(item) {
     await this.query(
       'INSERT INTO quantitative_items (proposalId, itemIndex, text) VALUES ($1, $2, $3)',
@@ -389,7 +379,6 @@ class OptimizedCongressDatabase {
     return result.rows;
   }
 
-  // Методы для работы с голосованиями
   async startVoting(voting) {
     await this.query(`
       INSERT INTO votings 
@@ -435,7 +424,6 @@ class OptimizedCongressDatabase {
     return result.rows;
   }
 
-  // Методы для работы с голосами
   async addVote(vote) {
     await this.query(`
       INSERT INTO votes (proposalId, userId, voteType, createdAt, stage)
@@ -474,7 +462,6 @@ class OptimizedCongressDatabase {
     return result.rows;
   }
 
-  // Методы для работы с встречами
   async createMeeting(meeting) {
     await this.query(`
       INSERT INTO meetings 
@@ -550,7 +537,6 @@ class OptimizedCongressDatabase {
     await this.query('UPDATE meetings SET open = FALSE WHERE id = $1', [id], false);
   }
 
-  // Методы для работы с регистрациями на встречи
   async registerForMeeting(meetingId, userId) {
     await this.query(`
       INSERT INTO meeting_registrations (meetingId, userId, registeredAt)
@@ -591,7 +577,6 @@ class OptimizedCongressDatabase {
     return result.rows[0]?.registeredat || null;
   }
 
-  // Методы для работы с выступающими
   async addSpeaker(speaker) {
     await this.query(`
       INSERT INTO speakers (proposalId, userId, type, displayName, registeredAt)
@@ -621,7 +606,6 @@ class OptimizedCongressDatabase {
     );
   }
 
-  // Методы для работы с настройками
   async getBotSetting(key) {
     const result = await this.query('SELECT value FROM bot_settings WHERE key = $1', [key], true, 30000);
     return result.rows[0]?.value || null;
@@ -636,12 +620,10 @@ class OptimizedCongressDatabase {
     `, [key, value], false);
   }
 
-  // Очистка кэша
   clearCache() {
     this.queryCache.clear();
   }
 
-  // Закрытие соединения
   async close() {
     await this.pool.end();
   }
