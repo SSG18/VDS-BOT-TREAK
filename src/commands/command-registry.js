@@ -4,6 +4,7 @@ import { helpCommand } from './help-command.js';
 import { sendCommand } from './proposal-commands.js';
 import { meetingCommands } from './meeting-commands.js';
 import logger from '../utils/logger.js';
+import interactionOptimizer from '../events/interaction-optimizer.js'; // ДОБАВИТЬ ЭТУ СТРОЧКУ
 
 const commands = [
   {
@@ -40,7 +41,7 @@ const commands = [
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
 
-export async  function registerCommands() {
+export async function registerCommands() { // ИСПРАВИТЬ ОПЕЧАТКУ: было "export async"
   try {
     logger.info('🔄 Registering commands...');
     await rest.put(
