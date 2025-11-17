@@ -1,5 +1,30 @@
 import { CHAMBER_NAMES } from '../config/config.js';
 
+// Функция для безопасного преобразования любого значения в строку
+export function safeString(value, defaultValue = 'Не указано') {
+  if (value === null || value === undefined) {
+    return defaultValue;
+  }
+  
+  if (typeof value === 'string') {
+    return value;
+  }
+  
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return defaultValue;
+    }
+  }
+  
+  return defaultValue;
+}
+
 // Функция для форматирования времени с учетом часового пояса Москвы
 export function formatMoscowTime(timestamp) {
   try {
