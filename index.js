@@ -2417,9 +2417,32 @@ async function handlePostponeMeetingModal(interaction) {
 async function handleRejectLateModal(interaction) {
   await interaction.deferReply({ flags: 64 });
   
-  const parts = interaction.customId.split("_");
-  const meetingId = parts[3];
-  const userId = parts[4];
+  // ИСПРАВЛЕНИЕ: Правильно извлекаем meetingId и userId из customId
+  const customId = interaction.customId;
+  const prefix = "reject_late_modal_";
+  
+  if (!customId.startsWith(prefix)) {
+    await interaction.editReply({ content: "❌ Ошибка: неверный формат команды." });
+    return;
+  }
+  
+  // Убираем префикс и разбиваем оставшуюся часть
+  const rest = customId.slice(prefix.length);
+  const parts = rest.split('_');
+  
+  // ИСПРАВЛЕНИЕ: meetingId может содержать подчеркивания, userId всегда последний
+  if (parts.length < 2) {
+    await interaction.editReply({ content: "❌ Ошибка: неверный формат команды." });
+    return;
+  }
+  
+  // userId - последний элемент
+  const userId = parts[parts.length - 1];
+  // meetingId - все элементы кроме последнего, объединенные обратно
+  const meetingId = parts.slice(0, -1).join('_');
+  
+  console.log(`🔍 Extracted meetingId: ${meetingId}, userId: ${userId}`);
+  
   const reason = interaction.fields.getTextInputValue("reject_reason");
   
   const meeting = await db.getMeeting(meetingId);
@@ -2805,9 +2828,31 @@ async function handleLateRegistrationButton(interaction) {
 }
 
 async function handleApproveLateButton(interaction) {
-  const parts = interaction.customId.split("_");
-  const meetingId = parts[2];
-  const userId = parts[3];
+  // ИСПРАВЛЕНИЕ: Правильно извлекаем meetingId и userId из customId
+  const customId = interaction.customId;
+  const prefix = "approve_late_";
+  
+  if (!customId.startsWith(prefix)) {
+    await interaction.reply({ content: "❌ Ошибка: неверный формат команды.", flags: 64 });
+    return;
+  }
+  
+  // Убираем префикс и разбиваем оставшуюся часть
+  const rest = customId.slice(prefix.length);
+  const parts = rest.split('_');
+  
+  // ИСПРАВЛЕНИЕ: meetingId может содержать подчеркивания, userId всегда последний
+  if (parts.length < 2) {
+    await interaction.reply({ content: "❌ Ошибка: неверный формат команды.", flags: 64 });
+    return;
+  }
+  
+  // userId - последний элемент
+  const userId = parts[parts.length - 1];
+  // meetingId - все элементы кроме последнего, объединенные обратно
+  const meetingId = parts.slice(0, -1).join('_');
+  
+  console.log(`🔍 Extracted meetingId: ${meetingId}, userId: ${userId}`);
   
   const meeting = await db.getMeeting(meetingId);
   if (!meeting) {
@@ -2894,9 +2939,31 @@ async function handleApproveLateButton(interaction) {
 }
 
 async function handleRejectLateButton(interaction) {
-  const parts = interaction.customId.split("_");
-  const meetingId = parts[2];
-  const userId = parts[3];
+  // ИСПРАВЛЕНИЕ: Правильно извлекаем meetingId и userId из customId
+  const customId = interaction.customId;
+  const prefix = "reject_late_";
+  
+  if (!customId.startsWith(prefix)) {
+    await interaction.reply({ content: "❌ Ошибка: неверный формат команды.", flags: 64 });
+    return;
+  }
+  
+  // Убираем префикс и разбиваем оставшуюся часть
+  const rest = customId.slice(prefix.length);
+  const parts = rest.split('_');
+  
+  // ИСПРАВЛЕНИЕ: meetingId может содержать подчеркивания, userId всегда последний
+  if (parts.length < 2) {
+    await interaction.reply({ content: "❌ Ошибка: неверный формат команды.", flags: 64 });
+    return;
+  }
+  
+  // userId - последний элемент
+  const userId = parts[parts.length - 1];
+  // meetingId - все элементы кроме последнего, объединенные обратно
+  const meetingId = parts.slice(0, -1).join('_');
+  
+  console.log(`🔍 Extracted meetingId: ${meetingId}, userId: ${userId}`);
   
   const meeting = await db.getMeeting(meetingId);
   if (!meeting) {
@@ -2925,7 +2992,6 @@ async function handleRejectLateButton(interaction) {
   modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
   await interaction.showModal(modal);
 }
-
 async function handleStartRegistrationButton(interaction) {
   const meetingId = interaction.customId.split("start_registration_")[1];
   const meeting = await db.getMeeting(meetingId);
