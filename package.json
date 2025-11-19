@@ -1,0 +1,24 @@
+{
+  "name": "bot-treak",
+  "version": "2.1.0",
+  "description": "BOT DISCORD treak",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^8.7.0",
+    "discord.js": "^14.24.2",
+    "dotenv": "^17.2.3",
+    "lowdb": "^5.1.0",
+    "nanoid": "^4.0.2",
+    "nodemon": "^3.1.10"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "treak",
+  "license": "MIT"
+}
