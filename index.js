@@ -273,18 +273,44 @@ function parseCustomDuration(str) {
     totalMs += value * timeUnits[unit];
   }
 
-  return totalMs || 60000;
+  // Если не удалось распарсить, используем значение по умолчанию (1 час)
+  return totalMs || 60 * 60 * 1000;
 }
 
 function formatTimeLeft(ms) {
   if (ms <= 0) return "0s";
+  
   const sec = Math.ceil(ms / 1000);
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
+  const days = Math.floor(sec / (24 * 60 * 60));
+  const hours = Math.floor((sec % (24 * 60 * 60)) / (60 * 60));
+  const minutes = Math.floor((sec % (60 * 60)) / 60);
+  const seconds = sec % 60;
 
+  const parts = [];
+  
+  if (days > 0) {
+    parts.push(`${days}d`);
+    if (hours > 0) {
+      parts.push(`${hours}h`);
+    }
+    // Не показываем минуты и секунды при отображении дней
+  } else if (hours > 0) {
+    parts.push(`${hours}h`);
+    if (minutes > 0) {
+      parts.push(`${minutes}m`);
+    }
+    // Не показываем секунды при отображении часов
+  } else if (minutes > 0) {
+    parts.push(`${minutes}m`);
+    if (seconds > 0) {
+      parts.push(`${seconds}s`);
+    }
+  } else {
+    parts.push(`${seconds}s`);
+  }
+
+  return parts.join(' ');
+}
 // Функция для форматирования времени с учетом часового пояса Москвы
 function formatMoscowTime(timestamp) {
   try {
@@ -396,32 +422,23 @@ function getAvailableChambers(member) {
 }
 
 // Функция для проверки возможности голосования
+// Функция для проверки возможности голосования
 async function canUserVote(proposal, userId, voting) {
-  // Проверяем наличие единой роли голосования
   try {
     const guild = client.guilds.cache.get(GUILD_ID);
     const member = await guild.members.fetch(userId);
     
+    // ИСКЛЮЧЕНИЕ: если голосование длится 1 час или больше, не проверяем роль
+    if (voting.durationMs >= 60 * 60 * 1000 || voting.durationMs === 0) {
+      return { canVote: true };
+    }
+    
+    // Для коротких голосований проверяем единую роль голосования
     if (!member.roles.cache.has(VOTER_ROLE_ID)) {
       return { canVote: false, reason: "❌ У вас нет роли для голосования." };
     }
     
-    // Если голосование длится больше 1 дня, не проверяем регистрацию на заседание
-    if (voting.durationMs > 24 * 60 * 60 * 1000 || voting.durationMs === 0) {
-      return { canVote: true };
-    }
-    
-    // Для коротких голосований проверяем регистрацию на последнее заседание в палате
-    const lastMeeting = await db.getLastMeetingByChamber(proposal.chamber);
-    if (!lastMeeting) {
-      return { canVote: false, reason: "❌ Не найдено заседание для этой палаты." };
-    }
-    
-    const isRegistered = await db.isUserRegistered(lastMeeting.id, userId);
-    if (!isRegistered) {
-      return { canVote: false, reason: "❌ Вы не зарегистрированы на последнее заседание этой палаты." };
-    }
-    
+    // УБРАНА ПРОВЕРКА РЕГИСТРАЦИИ НА ЗАСЕДАНИЕ
     return { canVote: true };
   } catch (error) {
     console.error("❌ Error checking voting permission:", error);
@@ -3530,7 +3547,7 @@ async function handleRegularVoteButtons(interaction) {
       return;
     }
     
-    // Проверяем возможность голосования
+    // Проверяем возможность голосования (с новой логикой)
     const canVote = await canUserVote(proposal, interaction.user.id, voting);
     if (!canVote.canVote) {
       await interaction.editReply({ content: canVote.reason });
