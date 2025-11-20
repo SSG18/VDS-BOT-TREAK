@@ -1,4 +1,4 @@
-// database.js (PostgreSQL версия - ОПТИМИЗИРОВАННАЯ)
+// database.js (PostgreSQL версия - ОБНОВЛЕННАЯ)
 import pkg from 'pg';
 const { Pool } = pkg;
 
@@ -173,6 +173,28 @@ class CongressDatabase {
       )
     `);
 
+    // Таблица для делегирования голосов
+    await this.query(`
+      CREATE TABLE IF NOT EXISTS delegations (
+        id SERIAL PRIMARY KEY,
+        delegator_id TEXT NOT NULL,
+        delegate_id TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Таблица для повестки заседания
+    await this.query(`
+      CREATE TABLE IF NOT EXISTS meeting_agendas (
+        id SERIAL PRIMARY KEY,
+        meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+        proposal_id TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Инициализация счетчиков для каждой палаты
     const chambers = ['sf', 'gd_rublevka', 'gd_arbat', 'gd_patricki', 'gd_tverskoy'];
     for (const chamber of chambers) {
@@ -198,7 +220,12 @@ class CongressDatabase {
       'CREATE INDEX IF NOT EXISTS idx_meetings_open ON meetings(open)',
       'CREATE INDEX IF NOT EXISTS idx_quantitative_items_proposal ON quantitative_items(proposalId)',
       'CREATE INDEX IF NOT EXISTS idx_speakers_proposal ON speakers(proposalId)',
-      'CREATE INDEX IF NOT EXISTS idx_meeting_registrations_meeting ON meeting_registrations(meetingId)'
+      'CREATE INDEX IF NOT EXISTS idx_meeting_registrations_meeting ON meeting_registrations(meetingId)',
+      'CREATE INDEX IF NOT EXISTS idx_delegations_delegator ON delegations(delegator_id)',
+      'CREATE INDEX IF NOT EXISTS idx_delegations_delegate ON delegations(delegate_id)',
+      'CREATE INDEX IF NOT EXISTS idx_delegations_active ON delegations(active)',
+      'CREATE INDEX IF NOT EXISTS idx_meeting_agendas_meeting ON meeting_agendas(meeting_id)',
+      'CREATE INDEX IF NOT EXISTS idx_meeting_agendas_proposal ON meeting_agendas(proposal_id)'
     ];
 
     for (const indexSql of indexes) {
@@ -365,6 +392,20 @@ class CongressDatabase {
   async getProposalsByChamber(chamber) {
     const result = await this.query(
       'SELECT * FROM proposals WHERE chamber = $1 ORDER BY createdAt DESC',
+      [chamber]
+    );
+    return result.rows.map(proposal => ({
+      ...proposal,
+      events: typeof proposal.events === 'string' ? JSON.parse(proposal.events) : proposal.events
+    }));
+  }
+
+  async getPendingProposalsByChamber(chamber) {
+    const result = await this.query(
+      `SELECT * FROM proposals 
+       WHERE chamber = $1 
+       AND status IN ('На рассмотрении', 'На рассмотрении в палате')
+       ORDER BY createdAt DESC`,
       [chamber]
     );
     return result.rows.map(proposal => ({
@@ -625,6 +666,98 @@ class CongressDatabase {
       ON CONFLICT (key) DO UPDATE SET
         value = EXCLUDED.value
     `, [key, value]);
+  }
+
+  // Методы для работы с делегированием
+  async createDelegation(delegatorId, delegateId) {
+    // Деактивируем старые делегирования для этого делегатора
+    await this.query(
+      'UPDATE delegations SET active = FALSE WHERE delegator_id = $1',
+      [delegatorId]
+    );
+    
+    // Создаем новое делегирование
+    await this.query(`
+      INSERT INTO delegations (delegator_id, delegate_id, created_at, active)
+      VALUES ($1, $2, $3, TRUE)
+    `, [delegatorId, delegateId, Date.now()]);
+  }
+
+  async removeDelegation(delegatorId) {
+    await this.query(
+      'UPDATE delegations SET active = FALSE WHERE delegator_id = $1',
+      [delegatorId]
+    );
+  }
+
+  async getActiveDelegation(delegatorId) {
+    const result = await this.query(`
+      SELECT * FROM delegations 
+      WHERE delegator_id = $1 AND active = TRUE 
+      LIMIT 1
+    `, [delegatorId]);
+    return result.rows[0] || null;
+  }
+
+  async getDelegationsByDelegate(delegateId) {
+    const result = await this.query(`
+      SELECT * FROM delegations 
+      WHERE delegate_id = $1 AND active = TRUE
+    `, [delegateId]);
+    return result.rows;
+  }
+
+  async getAllActiveDelegations() {
+    const result = await this.query(`
+      SELECT d.*, 
+             delegator.username as delegator_username,
+             delegate.username as delegate_username
+      FROM delegations d
+      LEFT JOIN bot_settings delegator ON delegator.key = CONCAT('user_', d.delegator_id)
+      LEFT JOIN bot_settings delegate ON delegate.key = CONCAT('user_', d.delegate_id)
+      WHERE d.active = TRUE
+    `);
+    return result.rows;
+  }
+
+  // Методы для работы с повесткой заседания
+  async addToAgenda(meetingId, proposalId) {
+    await this.query(`
+      INSERT INTO meeting_agendas (meeting_id, proposal_id)
+      VALUES ($1, $2)
+      ON CONFLICT (meeting_id, proposal_id) DO NOTHING
+    `, [meetingId, proposalId]);
+  }
+
+  async getAgenda(meetingId) {
+    const result = await this.query(`
+      SELECT p.* 
+      FROM meeting_agendas ma
+      JOIN proposals p ON ma.proposal_id = p.id
+      WHERE ma.meeting_id = $1
+      ORDER BY p.createdAt ASC
+    `, [meetingId]);
+    return result.rows;
+  }
+
+  async isProposalInAgenda(meetingId, proposalId) {
+    const result = await this.query(`
+      SELECT 1 FROM meeting_agendas 
+      WHERE meeting_id = $1 AND proposal_id = $2
+      LIMIT 1
+    `, [meetingId, proposalId]);
+    return result.rows.length > 0;
+  }
+
+  async getMeetingsByProposal(proposalId) {
+    const result = await this.query(`
+      SELECT m.* 
+      FROM meeting_agendas ma
+      JOIN meetings m ON ma.meeting_id = m.id
+      WHERE ma.proposal_id = $1
+      ORDER BY m.createdAt DESC
+    `, [proposalId]);
+    return result.rows;
   }
 
   // Закрытие соединения
