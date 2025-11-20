@@ -4338,29 +4338,6 @@ async function startMeetingTicker(meetingId) {
 
 // ================== INITIALIZATION AND EVENT HANDLERS ==================
 
-// Функция для восстановления таймеров при перезапуске
-async function restoreAllTimers() {
-  try {
-    // Meetings
-    const openMeetings = await db.getOpenMeetings();
-    for (const meeting of openMeetings) {
-      startMeetingTicker(meeting.id).catch(console.error);
-    }
-    
-    // Votes
-    const openVotings = await db.getOpenVotings();
-    for (const voting of openVotings) {
-      startVoteTicker(voting.proposalid).catch(console.error);
-    }
-    
-    // Обновляем сообщение с делегированиями
-    await updateDelegationMessage();
-    
-    console.log(`✅ Restored ${openMeetings.length} meetings and ${openVotings.length} votes`);
-  } catch (error) {
-    console.error("❌ Error restoring timers:", error);
-  }
-}
 
 // Обработчики событий Discord
 client.on(Events.ClientReady, async () => {
