@@ -2983,6 +2983,471 @@ async function safeReply(interaction, content, options = {}) {
   }
 }
 
+// ================== VOTE FINALIZATION FUNCTIONS ==================
+async function finalizeQuantitativeVote(proposalId) {
+  const proposal = await db.getProposal(proposalId);
+  if (!proposal) return;
+
+  const voting = await db.getVoting(proposalId);
+  const items = await db.getQuantitativeItems(proposalId);
+  const lastMeeting = await db.getLastMeetingByChamber(proposal.chamber);
+  
+  const votes = await db.getVotes(proposalId);
+  
+  const itemVotes = {};
+  items.forEach(item => {
+    itemVotes[item.itemindex] = 0;
+  });
+  
+  let abstainCount = 0;
+  const voters = new Set();
+  
+  votes.forEach(vote => {
+    voters.add(vote.userid);
+    if (vote.votetype.startsWith('item_')) {
+      const itemIndex = parseInt(vote.votetype.split('_')[1]);
+      if (itemVotes[itemIndex] !== undefined) {
+        itemVotes[itemIndex]++;
+      }
+    } else if (vote.votetype === 'abstain') {
+      abstainCount++;
+    }
+  });
+  
+  const delegations = await db.getAllActiveDelegations();
+  for (const delegation of delegations) {
+    const delegateVoted = votes.some(v => v.userid === delegation.delegate_id);
+    const delegateRegistered = await db.isUserRegistered(lastMeeting.id, delegation.delegate_id);
+    
+    if (delegateVoted && delegateRegistered) {
+      const delegateVote = votes.find(v => v.userid === delegation.delegate_id);
+      if (delegateVote?.votetype.startsWith('item_')) {
+        const itemIndex = parseInt(delegateVote.votetype.split('_')[1]);
+        if (itemVotes[itemIndex] !== undefined) {
+          itemVotes[itemIndex]++;
+        }
+      } else if (delegateVote?.votetype === 'abstain') {
+        abstainCount++;
+      }
+    }
+  }
+  
+  const totalVoted = voters.size + delegations.filter(d => 
+    votes.some(v => v.userid === d.delegate_id) && 
+    db.isUserRegistered(lastMeeting.id, d.delegate_id)
+  ).length;
+  
+  const voteQuorum = lastMeeting ? lastMeeting.quorum : 1;
+  const totalMembers = lastMeeting ? lastMeeting.totalmembers : 53;
+  
+  const isQuorumMet = totalVoted >= voteQuorum;
+  
+  const winningItems = [];
+  for (const [itemIndex, voteCount] of Object.entries(itemVotes)) {
+    if (voteCount > totalVoted / 2) {
+      winningItems.push({
+        index: parseInt(itemIndex),
+        votes: voteCount,
+        text: items.find(item => item.itemindex === parseInt(itemIndex))?.text || 'Неизвестный пункт'
+      });
+    }
+  }
+  
+  winningItems.sort((a, b) => b.votes - a.votes);
+  
+  let resultText = "Не принято";
+  let resultColor = COLORS.SECONDARY;
+  let resultEmoji = "❌";
+  let tagId = FORUM_TAGS.NOT_APPROVED;
+  
+  if (!isQuorumMet) {
+    resultText = "Не принято (кворум не собран)";
+  } else if (winningItems.length === 0) {
+    resultText = "Ни один пункт не набрал большинства";
+  } else if (winningItems.length === 1) {
+    resultText = "Принят один пункт";
+    resultColor = COLORS.SUCCESS;
+    resultEmoji = "✅";
+    tagId = FORUM_TAGS.APPROVED;
+  } else {
+    resultText = "Принято несколько пунктов";
+    resultColor = COLORS.SUCCESS;
+    resultEmoji = "✅";
+    tagId = FORUM_TAGS.APPROVED;
+    
+    await startQuantitativeRunoff(proposalId, winningItems);
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📊 Результаты рейтингового голосования — ${proposal.number}`)
+    .setDescription(`## ${resultEmoji} ${resultText}`)
+    .addFields(
+      { name: "📊 Всего проголосовало", value: String(totalVoted), inline: true },
+      { name: "📋 Требуемый кворум", value: `${voteQuorum} голосов`, inline: true },
+      { name: "📈 Статус кворума", value: isQuorumMet ? "✅ Собран" : "❌ Не собран", inline: true },
+      { name: "⚪ Воздержалось", value: String(abstainCount), inline: true }
+    )
+    .setColor(resultColor)
+    .setFooter({ text: FOOTER })
+    .setTimestamp();
+
+  for (const [itemIndex, voteCount] of Object.entries(itemVotes)) {
+    const item = items.find(item => item.itemindex === parseInt(itemIndex));
+    const percentage = totalVoted > 0 ? Math.round((voteCount / totalVoted) * 100) : 0;
+    const isWinner = winningItems.some(winning => winning.index === parseInt(itemIndex));
+    
+    embed.addFields({
+      name: `Пункт ${itemIndex} ${isWinner ? '✅' : ''}`,
+      value: `${item.text}\nГолосов: ${voteCount} (${percentage}%)`,
+      inline: false
+    });
+  }
+
+  if (winningItems.length > 0) {
+    embed.addFields({
+      name: "🎯 Победившие пункты",
+      value: winningItems.map(item => `**Пункт ${item.index}:** ${item.text} (${item.votes} голосов)`).join('\n'),
+      inline: false
+    });
+  }
+
+  try {
+    const thread = await client.channels.fetch(proposal.threadid);
+    
+    if (voting?.messageid) {
+      try {
+        const voteMsg = await thread.messages.fetch(voting.messageid);
+        await voteMsg.edit({ content: null, embeds: [embed], components: [] });
+      } catch (e) {
+        await thread.send({ embeds: [embed] });
+      }
+    } else {
+      await thread.send({ embeds: [embed] });
+    }
+
+    if (winningItems.length <= 1) {
+      await db.endVoting(proposalId, Date.now());
+      await db.updateProposalStatus(proposalId, resultText);
+      
+      const events = proposal.events || [];
+      events.push({
+        type: 'vote_result',
+        result: resultText,
+        timestamp: Date.now(),
+        chamber: proposal.chamber,
+        description: `Рейтинговое голосование в ${CHAMBER_NAMES[proposal.chamber]} завершено. Результат: ${resultText}`
+      });
+      await db.updateProposalEvents(proposalId, events);
+      
+      await updateHistoryMessage(proposalId);
+      
+      if (voteTimers.has(proposalId)) {
+        clearInterval(voteTimers.get(proposalId));
+        voteTimers.delete(proposalId);
+      }
+      
+      if (winningItems.length <= 1) {
+        setTimeout(async () => {
+          await closeThreadWithTag(proposal.threadid, tagId);
+        }, 30000);
+      }
+    }
+    
+  } catch (e) {
+    console.error("❌ Error publishing quantitative vote results:", e);
+  }
+}
+
+async function startQuantitativeRunoff(proposalId, winningItems) {
+  const proposal = await db.getProposal(proposalId);
+  if (!proposal) return;
+
+  const voting = {
+    proposalId: proposalId,
+    open: true,
+    startedAt: Date.now(),
+    durationMs: 300000,
+    expiresAt: Date.now() + 300000,
+    messageId: null,
+    isSecret: false,
+    formula: '0',
+    stage: 2
+  };
+
+  await db.startVoting(voting);
+
+  try {
+    const thread = await client.channels.fetch(proposal.threadid);
+    
+    const embed = new EmbedBuilder()
+      .setTitle(`🗳️ Второй тур рейтингового голосования — ${proposal.number}`)
+      .setDescription(`Несколько пунктов набрали большинство голосов. Во втором туре выберите ОДИН наиболее предпочтительный пункт.`)
+      .setColor(COLORS.INFO)
+      .setFooter({ text: FOOTER })
+      .setTimestamp();
+
+    const voteRows = [];
+    let currentRow = new ActionRowBuilder();
+    
+    winningItems.forEach((item, index) => {
+      if (currentRow.components.length >= 3) {
+        voteRows.push(currentRow);
+        currentRow = new ActionRowBuilder();
+      }
+      currentRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`vote_item_${item.index}_${proposalId}`)
+          .setLabel(`Пункт ${item.index}`)
+          .setStyle(ButtonStyle.Primary)
+      );
+    });
+    
+    if (currentRow.components.length >= 3) {
+      voteRows.push(currentRow);
+      currentRow = new ActionRowBuilder();
+    }
+    currentRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`vote_abstain_${proposalId}`)
+        .setLabel("⚪ Воздержаться")
+        .setStyle(ButtonStyle.Secondary)
+    );
+    
+    if (currentRow.components.length > 0) {
+      voteRows.push(currentRow);
+    }
+    
+    const controlRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`end_vote_${proposalId}`).setLabel("⏹️ Завершить голосование").setStyle(ButtonStyle.Danger)
+    );
+    
+    voteRows.push(controlRow);
+
+    const runoffMsg = await thread.send({ 
+      embeds: [embed], 
+      components: voteRows 
+    });
+
+    voting.runoffMessageId = runoffMsg.id;
+    await db.startVoting(voting);
+
+    await startVoteTicker(proposalId);
+    
+  } catch (e) {
+    console.error("❌ Error starting quantitative runoff:", e);
+  }
+}
+
+async function finalizeQuantitativeRunoff(proposalId) {
+  const proposal = await db.getProposal(proposalId);
+  if (!proposal) return;
+
+  const voting = await db.getVoting(proposalId);
+  const items = await db.getQuantitativeItems(proposalId);
+  const lastMeeting = await db.getLastMeetingByChamber(proposal.chamber);
+  
+  const votes = await db.getVotes(proposalId, 2);
+  
+  const itemVotes = {};
+  const voters = new Set();
+  let abstainCount = 0;
+  
+  votes.forEach(vote => {
+    voters.add(vote.userid);
+    if (vote.votetype.startsWith('item_')) {
+      const itemIndex = parseInt(vote.votetype.split('_')[1]);
+      itemVotes[itemIndex] = (itemVotes[itemIndex] || 0) + 1;
+    } else if (vote.votetype === 'abstain') {
+      abstainCount++;
+    }
+  });
+  
+  const delegations = await db.getAllActiveDelegations();
+  for (const delegation of delegations) {
+    const delegateVoted = votes.some(v => v.userid === delegation.delegate_id);
+    const delegateRegistered = await db.isUserRegistered(lastMeeting.id, delegation.delegate_id);
+    
+    if (delegateVoted && delegateRegistered) {
+      const delegateVote = votes.find(v => v.userid === delegation.delegate_id);
+      if (delegateVote?.votetype.startsWith('item_')) {
+        const itemIndex = parseInt(delegateVote.votetype.split('_')[1]);
+        itemVotes[itemIndex] = (itemVotes[itemIndex] || 0) + 1;
+      } else if (delegateVote?.votetype === 'abstain') {
+        abstainCount++;
+      }
+    }
+  }
+  
+  const totalVoted = voters.size + delegations.filter(d => 
+    votes.some(v => v.userid === d.delegate_id) && 
+    db.isUserRegistered(lastMeeting.id, d.delegate_id)
+  ).length;
+  
+  let winner = null;
+  let maxVotes = 0;
+  
+  for (const [itemIndex, voteCount] of Object.entries(itemVotes)) {
+    if (voteCount > maxVotes) {
+      maxVotes = voteCount;
+      winner = {
+        index: parseInt(itemIndex),
+        votes: voteCount,
+        text: items.find(item => item.itemindex === parseInt(itemIndex))?.text || 'Неизвестный пункт'
+      };
+    }
+  }
+  
+  const resultText = winner ? `Принят пункт ${winner.index}` : "Ни один пункт не выбран";
+  const resultColor = winner ? COLORS.SUCCESS : COLORS.DANGER;
+  const resultEmoji = winner ? "✅" : "❌";
+  const tagId = winner ? FORUM_TAGS.APPROVED : FORUM_TAGS.NOT_APPROVED;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📊 Результаты второго тура — ${proposal.number}`)
+    .setDescription(`## ${resultEmoji} ${resultText}`)
+    .addFields(
+      { name: "📊 Всего проголосовало", value: String(totalVoted), inline: true },
+      { name: "⚪ Воздержалось", value: String(abstainCount), inline: true }
+    )
+    .setColor(resultColor)
+    .setFooter({ text: FOOTER })
+    .setTimestamp();
+
+  if (winner) {
+    embed.addFields({
+      name: "🎯 Победивший пункт",
+      value: `**Пункт ${winner.index}:** ${winner.text}\n**Голосов:** ${winner.votes}`,
+      inline: false
+    });
+  }
+
+  for (const [itemIndex, voteCount] of Object.entries(itemVotes)) {
+    const item = items.find(item => item.itemindex === parseInt(itemIndex));
+    const percentage = totalVoted > 0 ? Math.round((voteCount / totalVoted) * 100) : 0;
+    const isWinner = winner && winner.index === parseInt(itemIndex);
+    
+    embed.addFields({
+      name: `Пункт ${itemIndex} ${isWinner ? '👑' : ''}`,
+      value: `${item.text}\nГолосов: ${voteCount} (${percentage}%)`,
+      inline: false
+    });
+  }
+
+  try {
+    const thread = await client.channels.fetch(proposal.threadid);
+    
+    if (voting?.runoffmessageid) {
+      try {
+        const runoffMsg = await thread.messages.fetch(voting.runoffmessageid);
+        await runoffMsg.edit({ content: null, embeds: [embed], components: [] });
+      } catch (e) {
+        await thread.send({ embeds: [embed] });
+      }
+    } else {
+      await thread.send({ embeds: [embed] });
+    }
+
+    await db.endVoting(proposalId, Date.now());
+    await db.updateProposalStatus(proposalId, resultText);
+    
+    const events = proposal.events || [];
+    events.push({
+      type: 'vote_result',
+      result: resultText,
+      timestamp: Date.now(),
+      chamber: proposal.chamber,
+      description: `Второй тур рейтингового голосования в ${CHAMBER_NAMES[proposal.chamber]} завершено. ${resultText}`
+    });
+    await db.updateProposalEvents(proposalId, events);
+    
+    await updateHistoryMessage(proposalId);
+    
+    if (voteTimers.has(proposalId)) {
+      clearInterval(voteTimers.get(proposalId));
+      voteTimers.delete(proposalId);
+    }
+    
+    setTimeout(async () => {
+      await closeThreadWithTag(proposal.threadid, tagId);
+    }, 30000);
+    
+  } catch (e) {
+    console.error("❌ Error publishing runoff results:", e);
+  }
+}
+
+// ================== MISSING FUNCTION ==================
+async function getRegistrationListWithDelegations(meetingId) {
+  const registrations = await db.getMeetingRegistrations(meetingId);
+  let listText = '';
+  
+  for (const reg of registrations) {
+    try {
+      const user = await client.users.fetch(reg.userid);
+      const delegation = await getDelegatedVote(reg.userid);
+      
+      if (delegation) {
+        const delegator = await client.users.fetch(delegation.delegator_id);
+        listText += `• <@${reg.userid}> (${user.username}) - делегат от ${delegator.username}\n`;
+      } else {
+        listText += `• <@${reg.userid}> (${user.username})\n`;
+      }
+    } catch (error) {
+      listText += `• <@${reg.userid}>\n`;
+    }
+  }
+  
+  return listText || "Никто не зарегистрирован";
+}
+
+// ================== CONFIG VALIDATION ==================
+function validateConfig() {
+  const requiredEnvVars = [
+    'DISCORD_TOKEN', 'CLIENT_ID', 'GUILD_ID',
+    'SF_CHANNEL_ID', 'GD_RUBLEVKA_CHANNEL_ID', 'GD_ARBAT_CHANNEL_ID', 
+    'GD_PATRICKI_CHANNEL_ID', 'GD_TVERSKOY_CHANNEL_ID',
+    'SF_MEETING_CHANNEL_ID', 'GD_RUBLEVKA_MEETING_CHANNEL_ID',
+    'GD_ARBAT_MEETING_CHANNEL_ID', 'GD_PATRICKI_MEETING_CHANNEL_ID', 
+    'GD_TVERSKOY_MEETING_CHANNEL_ID',
+    'FORUM_TAG_ON_REVIEW', 'FORUM_TAG_APPROVED', 'FORUM_TAG_REJECTED',
+    'FORUM_TAG_NOT_APPROVED', 'FORUM_TAG_SIGNED', 'FORUM_TAG_VETOED',
+    'SENATOR_ROLE_ID', 'SENATOR_NO_VOTE_ROLE_ID', 'DEPUTY_ROLE_ID',
+    'DEPUTY_NO_VOTE_ROLE_ID', 'CHAIRMAN_ROLE_ID', 'VICE_CHAIRMAN_ROLE_ID',
+    'GOVERNMENT_CHAIRMAN_ROLE_ID', 'PRESIDENT_USER_ID',
+    'RUBLEVKA_ROLE_ID', 'ARBAT_ROLE_ID', 'PATRICKI_ROLE_ID', 'TVERSKOY_ROLE_ID',
+    'ADMIN_ROLE_SEND_ID', 'SYSADMIN_ROLE_ID'
+  ];
+
+  const missing = requiredEnvVars.filter(key => !process.env[key]);
+  
+  if (missing.length > 0) {
+    console.error("❌ Missing required environment variables:", missing);
+    return false;
+  }
+  
+  for (const [chamber, channelId] of Object.entries(CHAMBER_CHANNELS)) {
+    if (!channelId) {
+      console.error(`❌ Missing channel ID for chamber: ${chamber}`);
+      return false;
+    }
+  }
+
+  console.log("✅ All configuration validated successfully");
+  return true;
+}
+
+if (!validateConfig()) {
+  console.error("❌ Configuration validation failed. Please check your environment variables.");
+  process.exit(1);
+}
+
+if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
+  console.error("❌ Please set DISCORD_TOKEN, CLIENT_ID, GUILD_ID env vars.");
+  process.exit(1);
+}
+
+
 // ================== INITIALIZATION ==================
 async function restoreAllTimers() {
   try {
