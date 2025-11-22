@@ -1,4 +1,4 @@
-// database.js (PostgreSQL версия - ОПТИМИЗИРОВАННАЯ)
+// database.js (PostgreSQL версия - ИСПРАВЛЕННАЯ)
 import pkg from 'pg';
 const { Pool } = pkg;
 
@@ -160,15 +160,14 @@ class CongressDatabase {
       )
     `);
 
-    // Таблица для делегирования голосов
+    // Таблица для делегирования голосов (ИСПРАВЛЕННАЯ - убрано дублирование created_at)
     await this.query(`
       CREATE TABLE IF NOT EXISTS delegations (
         id SERIAL PRIMARY KEY,
         delegator_id TEXT NOT NULL,
         delegate_id TEXT NOT NULL,
         created_at BIGINT NOT NULL,
-        active BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        active BOOLEAN DEFAULT TRUE
       )
     `);
 
@@ -651,13 +650,8 @@ class CongressDatabase {
 
   async getAllActiveDelegations() {
     const result = await this.query(`
-      SELECT d.*, 
-             delegator.username as delegator_username,
-             delegate.username as delegate_username
-      FROM delegations d
-      LEFT JOIN bot_settings delegator ON delegator.key = CONCAT('user_', d.delegator_id)
-      LEFT JOIN bot_settings delegate ON delegate.key = CONCAT('user_', d.delegate_id)
-      WHERE d.active = TRUE
+      SELECT * FROM delegations 
+      WHERE active = TRUE
     `);
     return result.rows;
   }
