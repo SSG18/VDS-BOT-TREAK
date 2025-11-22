@@ -1,4 +1,4 @@
-// database.js (PostgreSQL версия - ОБНОВЛЕННАЯ)
+// database.js (PostgreSQL версия - ОПТИМИЗИРОВАННАЯ)
 import pkg from 'pg';
 const { Pool } = pkg;
 
@@ -151,19 +151,6 @@ class CongressDatabase {
       )
     `);
 
-    // Таблица для выступающих
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS speakers (
-        id SERIAL PRIMARY KEY,
-        proposalId TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
-        userId TEXT NOT NULL,
-        type TEXT NOT NULL,
-        displayName TEXT NOT NULL,
-        registeredAt BIGINT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
     // Таблица для настроек бота
     await this.query(`
       CREATE TABLE IF NOT EXISTS bot_settings (
@@ -219,7 +206,6 @@ class CongressDatabase {
       'CREATE INDEX IF NOT EXISTS idx_meetings_chamber ON meetings(chamber)',
       'CREATE INDEX IF NOT EXISTS idx_meetings_open ON meetings(open)',
       'CREATE INDEX IF NOT EXISTS idx_quantitative_items_proposal ON quantitative_items(proposalId)',
-      'CREATE INDEX IF NOT EXISTS idx_speakers_proposal ON speakers(proposalId)',
       'CREATE INDEX IF NOT EXISTS idx_meeting_registrations_meeting ON meeting_registrations(meetingId)',
       'CREATE INDEX IF NOT EXISTS idx_delegations_delegator ON delegations(delegator_id)',
       'CREATE INDEX IF NOT EXISTS idx_delegations_delegate ON delegations(delegate_id)',
@@ -236,13 +222,11 @@ class CongressDatabase {
   // Методы для работы с предложениями
   async getNextProposalNumber(chamber) {
     try {
-      // Сначала пытаемся обновить существующий счетчик
       let result = await this.query(
         'UPDATE chamber_counters SET value = value + 1 WHERE chamberId = $1 RETURNING value',
         [chamber]
       );
       
-      // Если счетчика не было, создаем его и снова пытаемся обновить
       if (result.rows.length === 0) {
         await this.query(
           'INSERT INTO chamber_counters (chamberId, value) VALUES ($1, 1) ON CONFLICT (chamberId) DO NOTHING',
@@ -254,7 +238,6 @@ class CongressDatabase {
         );
       }
       
-      // Если все еще нет результата, используем значение по умолчанию
       if (result.rows.length === 0) {
         console.warn(`⚠️ Could not get counter for chamber ${chamber}, using default value`);
         const number = '001';
@@ -267,14 +250,12 @@ class CongressDatabase {
       return `${prefix}-${number}`;
     } catch (error) {
       console.error('❌ Error in getNextProposalNumber:', error);
-      // Fallback на случай ошибки
       const number = '001';
       const prefix = chamber === 'sf' ? 'СФ' : 'ГД';
       return `${prefix}-${number}`;
     }
   }
 
-  // Оптимизированный метод для получения голосов с пагинацией
   async getVotes(proposalId, stage = 1, limit = 1000) {
     const result = await this.query(
       'SELECT * FROM votes WHERE proposalId = $1 AND stage = $2 ORDER BY createdAt ASC LIMIT $3',
@@ -283,7 +264,6 @@ class CongressDatabase {
     return result.rows;
   }
 
-  // Метод для быстрой проверки существования предложения
   async proposalExists(proposalId) {
     const result = await this.query(
       'SELECT 1 FROM proposals WHERE id = $1 LIMIT 1',
@@ -292,7 +272,6 @@ class CongressDatabase {
     return result.rows.length > 0;
   }
 
-  // Метод для проверки, голосовал ли уже пользователь
   async hasUserVoted(proposalId, userId, stage = 1) {
     const result = await this.query(
       'SELECT 1 FROM votes WHERE proposalId = $1 AND userId = $2 AND stage = $3 LIMIT 1',
@@ -363,10 +342,6 @@ class CongressDatabase {
 
   async updateProposalThread(id, threadId) {
     await this.query('UPDATE proposals SET threadId = $1 WHERE id = $2', [threadId, id]);
-  }
-
-  async updateProposalSpeakersMessage(id, messageId) {
-    await this.query('UPDATE proposals SET speakersMessageId = $1 WHERE id = $2', [messageId, id]);
   }
 
   async updateProposalHistoryMessage(id, messageId) {
@@ -482,10 +457,9 @@ class CongressDatabase {
 
   // Методы для работы с голосами
   async addVote(vote) {
-    // Проверяем, не голосовал ли уже пользователь
     const hasVoted = await this.hasUserVoted(vote.proposalId, vote.userId, vote.stage || 1);
     if (hasVoted) {
-      return false; // Уже голосовал
+      return false;
     }
     
     await this.query(`
@@ -493,7 +467,7 @@ class CongressDatabase {
       VALUES ($1, $2, $3, $4, $5)
     `, [vote.proposalId, vote.userId, vote.voteType, vote.createdAt, vote.stage || 1]);
     
-    return true; // Голос успешно добавлен
+    return true;
   }
 
   async getVoteCounts(proposalId, stage = 1) {
@@ -623,36 +597,6 @@ class CongressDatabase {
     return result.rows[0]?.registeredat || null;
   }
 
-  // Методы для работы с выступающими
-  async addSpeaker(speaker) {
-    await this.query(`
-      INSERT INTO speakers (proposalId, userId, type, displayName, registeredAt)
-      VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (proposalId, userId) DO UPDATE SET
-        type = EXCLUDED.type,
-        displayName = EXCLUDED.displayName,
-        registeredAt = EXCLUDED.registeredAt
-    `, [
-      speaker.proposalId, speaker.userId, speaker.type,
-      speaker.displayName, speaker.registeredAt
-    ]);
-  }
-
-  async getSpeakers(proposalId) {
-    const result = await this.query(
-      'SELECT * FROM speakers WHERE proposalId = $1 ORDER BY registeredAt ASC',
-      [proposalId]
-    );
-    return result.rows;
-  }
-
-  async removeSpeaker(proposalId, userId) {
-    await this.query(
-      'DELETE FROM speakers WHERE proposalId = $1 AND userId = $2',
-      [proposalId, userId]
-    );
-  }
-
   // Методы для работы с настройками
   async getBotSetting(key) {
     const result = await this.query('SELECT value FROM bot_settings WHERE key = $1', [key]);
@@ -670,13 +614,11 @@ class CongressDatabase {
 
   // Методы для работы с делегированием
   async createDelegation(delegatorId, delegateId) {
-    // Деактивируем старые делегирования для этого делегатора
     await this.query(
       'UPDATE delegations SET active = FALSE WHERE delegator_id = $1',
       [delegatorId]
     );
     
-    // Создаем новое делегирование
     await this.query(`
       INSERT INTO delegations (delegator_id, delegate_id, created_at, active)
       VALUES ($1, $2, $3, TRUE)
@@ -760,7 +702,6 @@ class CongressDatabase {
     return result.rows;
   }
 
-  // Закрытие соединения
   async close() {
     await this.pool.end();
   }
