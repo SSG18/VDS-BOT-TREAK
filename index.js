@@ -3379,6 +3379,7 @@ async function getRegistrationListWithDelegations(meetingId) {
   return listText || "Никто не зарегистрирован";
 }
 
+
 // ================== CONFIG VALIDATION ==================
 function validateConfig() {
   const requiredEnvVars = [
