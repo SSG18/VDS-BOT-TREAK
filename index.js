@@ -2497,28 +2497,6 @@ async function startMeetingTicker(meetingId) {
   meetingTimers.set(meetingId, id);
 }
 
-async function getRegistrationListWithDelegations(meetingId) {
-  const registrations = await db.getMeetingRegistrations(meetingId);
-  let listText = '';
-  
-  for (const reg of registrations) {
-    try {
-      const user = await client.users.fetch(reg.userid);
-      const delegation = await getDelegatedVote(reg.userid);
-      
-      if (delegation) {
-        const delegator = await client.users.fetch(delegation.delegator_id);
-        listText += `• <@${reg.userid}> (${user.username}) - делегат от ${delegator.username}\n`;
-      } else {
-        listText += `• <@${reg.userid}> (${user.username})\n`;
-      }
-    } catch (error) {
-      listText += `• <@${reg.userid}>\n`;
-    }
-  }
-  
-  return listText || "Никто не зарегистрирован";
-}
 
 async function handleCancelMeetingButton(interaction) {
   const meetingId = interaction.customId.split("cancel_meeting_")[1];
