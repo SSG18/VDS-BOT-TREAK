@@ -13,30 +13,35 @@ class CongressDatabase {
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
     });
-    
+
+    // флаг инициализации
     this.initialized = false;
-    this.init().catch(console.error);
+
+    // Старт инициализации, но без блокирующей рекурсии
+    this.init().catch(err => {
+      console.error('❌ DB init failed:', err);
+    });
   }
 
   async init() {
     if (this.initialized) return;
-    
+    this.initialized = true; // помечаем как инициализированное, чтобы избежать повторных рекурсивных вызовов
     try {
-      await this.createTables();
+      await this.createTables(); // createTables будет использовать this.pool.query (не this.query)
       console.log('✅ Database initialized successfully');
-      this.initialized = true;
     } catch (error) {
       console.error('❌ Database initialization failed:', error);
-      // Не бросаем ошибку, чтобы бот мог продолжить работу
-      this.initialized = true;
+      // оставляем initialized = true чтобы не зацикливаться
     }
   }
 
+  // Универсальный метод запроса (используется в runtime)
   async query(text, params) {
+    // если ещё не инициализировано — дождёмся init (но init уже помечает initialized=true до выполнения DDL)
     if (!this.initialized) {
       await this.init();
     }
-    
+
     const start = Date.now();
     try {
       const res = await this.pool.query(text, params);
@@ -46,13 +51,12 @@ class CongressDatabase {
       }
       return res;
     } catch (error) {
-      console.error('❌ Query error:', error.message, text.substring(0, 100), params);
-      // Для ошибок "таблица не существует" пытаемся переинициализировать
+      console.error('❌ Query error:', error.message, text.substring(0, 120), params);
+      // Если таблиц нет, пробуем проинициализировать (без рекурсии, т.к. createTables использует pool.query)
       if (error.code === '42P01') {
-        console.log('🔄 Table missing, attempting to reinitialize...');
+        console.log('🔄 Table missing, attempting to reinitialize.');
         try {
           await this.createTables();
-          // Повторяем запрос после создания таблиц
           const res = await this.pool.query(text, params);
           return res;
         } catch (reinitError) {
@@ -63,19 +67,20 @@ class CongressDatabase {
     }
   }
 
+  // createTables выполняет DDL через this.pool.query — НЕ через this.query, чтобы избежать рекурсии
   async createTables() {
-    console.log('🔄 Creating database tables...');
-    
+    console.log('🔄 Creating database tables (DDL via pool.query)...');
+
     // Таблица для счетчиков предложений по палатам
-    await this.query(`
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS chamber_counters (
         chamberId TEXT PRIMARY KEY,
         value INTEGER NOT NULL DEFAULT 1
-      )
+      );
     `);
 
     // Таблица для предложений
-    await this.query(`
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS proposals (
         id TEXT PRIMARY KEY,
         number TEXT NOT NULL,
@@ -95,22 +100,22 @@ class CongressDatabase {
         parentProposalId TEXT,
         events JSONB DEFAULT '[]'::JSONB,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+      );
     `);
 
     // Таблица для пунктов количественного голосования
-    await this.query(`
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS quantitative_items (
         id SERIAL PRIMARY KEY,
         proposalId TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
         itemIndex INTEGER NOT NULL,
         text TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+      );
     `);
 
-    // Таблица для информации о голосованиях
-    await this.query(`
+    // Таблица для голосований
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS votings (
         proposalId TEXT PRIMARY KEY REFERENCES proposals(id) ON DELETE CASCADE,
         open BOOLEAN NOT NULL DEFAULT FALSE,
@@ -124,11 +129,11 @@ class CongressDatabase {
         stage INTEGER DEFAULT 1,
         runoffMessageId TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+      );
     `);
 
-    // Таблица для голосов
-    await this.query(`
+    // Таблица для голосов (уникальность по proposalId,userId,stage обеспечивает невозможность повтора)
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS votes (
         id SERIAL PRIMARY KEY,
         proposalId TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
@@ -138,11 +143,11 @@ class CongressDatabase {
         stage INTEGER DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(proposalId, userId, stage)
-      )
+      );
     `);
 
     // Таблица для встреч
-    await this.query(`
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS meetings (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -159,88 +164,90 @@ class CongressDatabase {
         totalMembers INTEGER DEFAULT 53,
         status TEXT DEFAULT 'planned',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+      );
     `);
 
     // Таблица для регистраций на встречи
-    await this.query(`
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS meeting_registrations (
         meetingId TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
         userId TEXT NOT NULL,
         registeredAt BIGINT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (meetingId, userId)
-      )
+      );
     `);
 
     // Таблица для настроек бота
-    await this.query(`
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS bot_settings (
         key TEXT PRIMARY KEY,
         value TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+      );
     `);
 
-    // Таблица для делегирования голосов (ИСПРАВЛЕННАЯ - убрано дублирование created_at)
-    await this.query(`
+    // Таблица для делегирования голосов
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS delegations (
         id SERIAL PRIMARY KEY,
         delegator_id TEXT NOT NULL,
         delegate_id TEXT NOT NULL,
         created_at BIGINT NOT NULL,
         active BOOLEAN DEFAULT TRUE
-      )
+      );
     `);
 
-    // Таблица для повестки заседания
-    await this.query(`
+    // Таблица для повестки заседания:
+    // важное: добавляем уникальное ограничение (meeting_id, proposal_id) — это решает ошибку ON CONFLICT
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS meeting_agendas (
         id SERIAL PRIMARY KEY,
         meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
         proposal_id TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(meeting_id, proposal_id)
+      );
     `);
 
-    // Инициализация счетчиков для каждой палаты
+    // Инициализация счетчиков (без рекурсивных вызовов)
     const chambers = ['sf', 'gd_rublevka', 'gd_arbat', 'gd_patricki', 'gd_tverskoy'];
     for (const chamber of chambers) {
-      await this.query(`
-        INSERT INTO chamber_counters (chamberId, value) 
-        VALUES ($1, 1) 
-        ON CONFLICT (chamberId) DO NOTHING
-      `, [chamber]);
+      await this.pool.query(
+        `INSERT INTO chamber_counters (chamberId, value) VALUES ($1, 1) ON CONFLICT (chamberId) DO NOTHING;`,
+        [chamber]
+      );
     }
 
-    // Создание индексов для оптимизации
+    // Создаем индексы (через pool.query)
     await this.createIndexes();
+
     console.log('✅ All tables created successfully');
   }
 
   async createIndexes() {
     const indexes = [
-      'CREATE INDEX IF NOT EXISTS idx_proposals_chamber ON proposals(chamber)',
-      'CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status)',
-      'CREATE INDEX IF NOT EXISTS idx_proposals_created_at ON proposals(created_at)',
-      'CREATE INDEX IF NOT EXISTS idx_votes_proposal_stage ON votes(proposalId, stage)',
-      'CREATE INDEX IF NOT EXISTS idx_votes_user ON votes(userId)',
-      'CREATE INDEX IF NOT EXISTS idx_meetings_chamber ON meetings(chamber)',
-      'CREATE INDEX IF NOT EXISTS idx_meetings_open ON meetings(open)',
-      'CREATE INDEX IF NOT EXISTS idx_quantitative_items_proposal ON quantitative_items(proposalId)',
-      'CREATE INDEX IF NOT EXISTS idx_meeting_registrations_meeting ON meeting_registrations(meetingId)',
-      'CREATE INDEX IF NOT EXISTS idx_delegations_delegator ON delegations(delegator_id)',
-      'CREATE INDEX IF NOT EXISTS idx_delegations_delegate ON delegations(delegate_id)',
-      'CREATE INDEX IF NOT EXISTS idx_delegations_active ON delegations(active)',
-      'CREATE INDEX IF NOT EXISTS idx_meeting_agendas_meeting ON meeting_agendas(meeting_id)',
-      'CREATE INDEX IF NOT EXISTS idx_meeting_agendas_proposal ON meeting_agendas(proposal_id)'
+      'CREATE INDEX IF NOT EXISTS idx_proposals_chamber ON proposals(chamber);',
+      'CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);',
+      'CREATE INDEX IF NOT EXISTS idx_proposals_created_at ON proposals(created_at);',
+      'CREATE INDEX IF NOT EXISTS idx_votes_proposal_stage ON votes(proposalid, stage);',
+      'CREATE INDEX IF NOT EXISTS idx_votes_user ON votes(userid);',
+      'CREATE INDEX IF NOT EXISTS idx_meetings_chamber ON meetings(chamber);',
+      'CREATE INDEX IF NOT EXISTS idx_meetings_open ON meetings(open);',
+      'CREATE INDEX IF NOT EXISTS idx_quantitative_items_proposal ON quantitative_items(proposalid);',
+      'CREATE INDEX IF NOT EXISTS idx_meeting_registrations_meeting ON meeting_registrations(meetingid);',
+      'CREATE INDEX IF NOT EXISTS idx_delegations_delegator ON delegations(delegator_id);',
+      'CREATE INDEX IF NOT EXISTS idx_delegations_delegate ON delegations(delegate_id);',
+      'CREATE INDEX IF NOT EXISTS idx_delegations_active ON delegations(active);',
+      'CREATE INDEX IF NOT EXISTS idx_meeting_agendas_meeting ON meeting_agendas(meeting_id);',
+      'CREATE INDEX IF NOT EXISTS idx_meeting_agendas_proposal ON meeting_agendas(proposal_id);'
     ];
 
-    for (const indexSql of indexes) {
+    for (const idx of indexes) {
       try {
-        await this.query(indexSql);
-      } catch (error) {
-        console.warn(`⚠️ Could not create index: ${indexSql}`, error.message);
+        await this.pool.query(idx);
+      } catch (err) {
+        console.warn('⚠️ Could not create index:', idx, err?.message || err);
       }
     }
     console.log('✅ Database indexes created');
