@@ -571,8 +571,8 @@ async function createMeetingWithAgenda(interaction, chamber, title, selectedProp
 }
 
 async function createMeetingFromSelection(interaction, chamber, selectedProposals) {
-  await interaction.deferReply({ flags: 64 });
-  
+  // Не делаем deferReply, потому что мы не хотим эпиhemeral ответ
+  // Вместо этого мы отправим сообщение в канал и будем использовать его как сообщение встречи
   try {
     const now = new Date();
     const dateString = now.toLocaleDateString('ru-RU');
@@ -587,7 +587,12 @@ async function createMeetingFromSelection(interaction, chamber, selectedProposal
     if (agenda.length > 0) {
       agendaText = '**📋 Повестка дня:**\n';
       for (const proposal of agenda) {
-        agendaText += `• [${proposal.number}](${proposal.link}) - ${proposal.name}\n`;
+        // Получаем threadId предложения, чтобы создать ссылку
+        const threadId = proposal.threadid;
+        const channelId = proposal.channelid;
+        // Создаем ссылку на ветку: https://discord.com/channels/{guildId}/{channelId}/{threadId}
+        const threadLink = `https://discord.com/channels/${GUILD_ID}/${channelId}/${threadId}`;
+        agendaText += `• [${proposal.number}](${threadLink}) - ${proposal.name}\n`;
       }
     }
     
@@ -610,18 +615,22 @@ async function createMeetingFromSelection(interaction, chamber, selectedProposal
       new ButtonBuilder().setCustomId(`edit_meeting_${meetingId}`).setLabel("Редактировать").setStyle(ButtonStyle.Secondary)
     );
 
-    await interaction.editReply({ 
+    // Отправляем сообщение в канал
+    const message = await interaction.channel.send({ 
       content: mentionRoleId ? `<@&${mentionRoleId}>` : null, 
       embeds: [embed], 
-      components: [buttons]
+      components: [buttons] 
     });
     
-    const message = await interaction.fetchReply();
+    // Сохраняем ID сообщения в базу данных
     await db.updateMeetingMessage(meetingId, message.id);
+    
+    // Отвечаем пользователю, что заседание создано (эпиhemeral, чтобы не засорять канал)
+    await interaction.reply({ content: `✅ Заседание создано: ${message.url}`, flags: 64 });
     
   } catch (error) {
     console.error("❌ Error creating meeting from selection:", error);
-    await interaction.editReply({ content: "❌ Ошибка при создании заседания." });
+    await interaction.reply({ content: "❌ Ошибка при создании заседания.", flags: 64 });
   }
 }
 
@@ -2370,6 +2379,7 @@ async function handleStartRegistrationModal(interaction) {
   });
 
   try {
+    // Получаем канал и сообщение встречи
     const ch = await client.channels.fetch(meeting.channelid);
     const msg = await ch.messages.fetch(meeting.messageid);
     
