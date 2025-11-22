@@ -2946,30 +2946,62 @@ async function closeThreadWithTag(threadId, tagId) {
 
 async function safeReply(interaction, content, options = {}) {
   try {
-    if (interaction.replied || interaction.deferred) {
-      return null;
+    // Если interaction устарел или нет возможности ответить обычным способом,
+    // пробуем отправить сообщение в канал (если доступен)
+    if (!interaction || !interaction.inGuild()) {
+      try {
+        const ch = await client.channels.fetch(interaction.channelId);
+        return await ch.send(content);
+      } catch (err) {
+        console.error('❌ safeReply: cannot fetch channel to send fallback message', err);
+        return null;
+      }
     }
 
-    const response = await interaction.reply({ 
-      content, 
-      flags: 64, 
-      ...options 
-    });
-    
-    setTimeout(async () => {
+    // Если interaction была отложена (deferred) — используем editReply
+    if (interaction.deferred && !interaction.replied) {
       try {
-        await response.delete();
-      } catch (deleteError) {
-        // Ignore delete errors
+        await interaction.editReply({ content, ...options });
+        return true;
+      } catch (err) {
+        // Если editReply упал (например, interaction устарел) — fallback to channel
+        console.warn('⚠️ safeReply: editReply failed, falling back to channel:', err?.message || err);
       }
-    }, 3500);
-    
-    return response;
+    }
+
+    // Если уже ответили — используем followUp
+    if (interaction.replied) {
+      try {
+        await interaction.followUp({ content, ...options });
+        return true;
+      } catch (err) {
+        console.warn('⚠️ safeReply: followUp failed, falling back to channel:', err?.message || err);
+      }
+    }
+
+    // Если ещё ничего не делали — обычный reply
+    try {
+      await interaction.reply({ content, flags: 64, ...options });
+      return true;
+    } catch (err) {
+      console.warn('⚠️ safeReply: reply failed, falling back to channel:', err?.message || err);
+    }
+
+    // Последний шанс — отправить сообщение в канал
+    try {
+      const ch = await client.channels.fetch(interaction.channelId);
+      await ch.send(content);
+      return true;
+    } catch (err) {
+      console.error('❌ safeReply: final fallback failed:', err);
+      return null;
+    }
   } catch (error) {
     console.error("❌ Error in safeReply:", error);
     return null;
   }
 }
+
 
 // ================== VOTE FINALIZATION FUNCTIONS ==================
 async function finalizeQuantitativeVote(proposalId) {
