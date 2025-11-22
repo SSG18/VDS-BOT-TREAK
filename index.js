@@ -26,6 +26,16 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
+// ================== DATABASE ERROR HANDLING ==================
+async function safeDatabaseCall(operation, fallback = null) {
+  try {
+    return await operation();
+  } catch (error) {
+    console.error(`❌ Database error in ${operation.name}:`, error.message);
+    return fallback;
+  }
+}
+
 const CHAMBER_CHANNELS = {
   'sf': process.env.SF_CHANNEL_ID,
   'gd_rublevka': process.env.GD_RUBLEVKA_CHANNEL_ID,
@@ -370,51 +380,51 @@ async function getDelegatedVote(userId) {
 
 // ================== DELEGATION SYSTEM ==================
 async function updateDelegationMessage() {
-  try {
-    const channel = await client.channels.fetch(DELEGATION_CHANNEL_ID);
-    const delegations = await db.getAllActiveDelegations();
-    
-    let description = '**📊 Текущие делегирования голосов:**\n\n';
-    
-    if (delegations.length === 0) {
-      description += '*На данный момент нет активных делегирований.*';
-    } else {
-      for (const delegation of delegations) {
-        try {
-          const delegator = await client.users.fetch(delegation.delegator_id);
-          const delegate = await client.users.fetch(delegation.delegate_id);
-          description += `• <@${delegation.delegator_id}> → <@${delegation.delegate_id}>\n`;
-        } catch (error) {
-          description += `• <@${delegation.delegator_id}> → <@${delegation.delegate_id}>\n`;
+  return await safeDatabaseCall(async () => {
+    try {
+      const channel = await client.channels.fetch(DELEGATION_CHANNEL_ID);
+      const delegations = await db.getAllActiveDelegations();
+      
+      let description = '**📊 Текущие делегирования голосов:**\n\n';
+      
+      if (!delegations || delegations.length === 0) {
+        description += '*На данный момент нет активных делегирований.*';
+      } else {
+        for (const delegation of delegations) {
+          try {
+            description += `• <@${delegation.delegator_id}> → <@${delegation.delegate_id}>\n`;
+          } catch (error) {
+            description += `• <@${delegation.delegator_id}> → <@${delegation.delegate_id}>\n`;
+          }
         }
       }
-    }
-    
-    const embed = new EmbedBuilder()
-      .setTitle('🎯 Система делегирования голосов')
-      .setDescription(description)
-      .setColor(COLORS.INFO)
-      .setFooter({ text: FOOTER })
-      .setTimestamp();
-    
-    if (delegationMessageId) {
-      try {
-        const message = await channel.messages.fetch(delegationMessageId);
-        await message.edit({ embeds: [embed] });
-      } catch (error) {
+      
+      const embed = new EmbedBuilder()
+        .setTitle('🎯 Система делегирования голосов')
+        .setDescription(description)
+        .setColor(COLORS.INFO)
+        .setFooter({ text: FOOTER })
+        .setTimestamp();
+      
+      if (delegationMessageId) {
+        try {
+          const message = await channel.messages.fetch(delegationMessageId);
+          await message.edit({ embeds: [embed] });
+        } catch (error) {
+          const message = await channel.send({ embeds: [embed] });
+          delegationMessageId = message.id;
+        }
+      } else {
         const message = await channel.send({ embeds: [embed] });
         delegationMessageId = message.id;
       }
-    } else {
-      const message = await channel.send({ embeds: [embed] });
-      delegationMessageId = message.id;
+      
+      return delegationMessageId;
+    } catch (error) {
+      console.error('❌ Error updating delegation message:', error);
+      return null;
     }
-    
-    return delegationMessageId;
-  } catch (error) {
-    console.error('❌ Error updating delegation message:', error);
-    return null;
-  }
+  }, null);
 }
 
 // ================== COMMANDS REGISTRATION ==================
