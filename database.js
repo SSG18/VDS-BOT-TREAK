@@ -1,4 +1,3 @@
-// database.js (PostgreSQL версия - ИСПРАВЛЕННАЯ)
 import pkg from 'pg';
 const { Pool } = pkg;
 
@@ -15,35 +14,58 @@ class CongressDatabase {
       connectionTimeoutMillis: 2000,
     });
     
+    this.initialized = false;
     this.init().catch(console.error);
   }
 
   async init() {
+    if (this.initialized) return;
+    
     try {
       await this.createTables();
       console.log('✅ Database initialized successfully');
+      this.initialized = true;
     } catch (error) {
       console.error('❌ Database initialization failed:', error);
-      throw error;
+      // Не бросаем ошибку, чтобы бот мог продолжить работу
+      this.initialized = true;
     }
   }
 
   async query(text, params) {
+    if (!this.initialized) {
+      await this.init();
+    }
+    
     const start = Date.now();
     try {
       const res = await this.pool.query(text, params);
       const duration = Date.now() - start;
       if (duration > 1000) {
-        console.log(`🐌 Slow query (${duration}ms):`, text);
+        console.log(`🐌 Slow query (${duration}ms):`, text.substring(0, 100));
       }
       return res;
     } catch (error) {
-      console.error('❌ Query error:', error, text, params);
+      console.error('❌ Query error:', error.message, text.substring(0, 100), params);
+      // Для ошибок "таблица не существует" пытаемся переинициализировать
+      if (error.code === '42P01') {
+        console.log('🔄 Table missing, attempting to reinitialize...');
+        try {
+          await this.createTables();
+          // Повторяем запрос после создания таблиц
+          const res = await this.pool.query(text, params);
+          return res;
+        } catch (reinitError) {
+          console.error('❌ Reinitialization failed:', reinitError);
+        }
+      }
       throw error;
     }
   }
 
   async createTables() {
+    console.log('🔄 Creating database tables...');
+    
     // Таблица для счетчиков предложений по палатам
     await this.query(`
       CREATE TABLE IF NOT EXISTS chamber_counters (
@@ -193,6 +215,7 @@ class CongressDatabase {
 
     // Создание индексов для оптимизации
     await this.createIndexes();
+    console.log('✅ All tables created successfully');
   }
 
   async createIndexes() {
@@ -214,10 +237,15 @@ class CongressDatabase {
     ];
 
     for (const indexSql of indexes) {
-      await this.query(indexSql);
+      try {
+        await this.query(indexSql);
+      } catch (error) {
+        console.warn(`⚠️ Could not create index: ${indexSql}`, error.message);
+      }
     }
+    console.log('✅ Database indexes created');
   }
-
+  
   // Методы для работы с предложениями
   async getNextProposalNumber(chamber) {
     try {
