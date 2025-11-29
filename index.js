@@ -930,6 +930,8 @@ async function handleModalSubmit(interaction) {
     await handleMeetingDetailsModal(interaction);
   } else if (interaction.customId.startsWith("start_registration_modal_")) {
     await handleStartRegistrationModal(interaction);
+  } else if (interaction.customId.startsWith("restart_registration_modal_")) {
+    await handleRestartRegistrationModal(interaction);
   }
 }
 
@@ -1246,6 +1248,11 @@ async function handleButton(interaction) {
 
     if (cid.startsWith("delayed_registration_")) {
       await handleDelayedRegistrationButton(interaction);
+      return;
+    }
+
+    if (cid.startsWith("restart_registration_")) {
+      await handleRestartRegistrationButton(interaction);
       return;
     }
 
@@ -1779,6 +1786,10 @@ async function finalizeProposalRegistration(proposalId, messageId) {
     const registrations = await db.getProposalRegistrations(proposalId);
     const registrationCount = registrations.length;
     
+    // Получаем кворум для палаты (1/3 от общего количества)
+    const quorum = await getChamberQuorum(proposal.chamber);
+    const isQuorumMet = registrationCount >= quorum;
+    
     let registrationList = '';
     for (const reg of registrations) {
       try {
@@ -1794,31 +1805,138 @@ async function finalizeProposalRegistration(proposalId, messageId) {
       .setDescription(`Регистрация на голосование завершена.`)
       .addFields(
         { name: "👥 Зарегистрировалось", value: String(registrationCount), inline: true },
+        { name: "📊 Требуемый кворум", value: `${quorum} (1/3 от общего числа)`, inline: true },
+        { name: "📈 Статус кворума", value: isQuorumMet ? "✅ Собран" : "❌ Не собран", inline: true },
         { name: "🕐 Завершение регистрации", value: formatMoscowTime(Date.now()), inline: true },
         { name: "📝 Список зарегистрированных", value: registrationList || "Никто не зарегистрирован", inline: false }
       )
-      .setColor(COLORS.SUCCESS)
+      .setColor(isQuorumMet ? COLORS.SUCCESS : COLORS.DANGER)
       .setFooter({ text: FOOTER })
       .setTimestamp();
 
-    const buttonsRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`start_voting_${proposalId}`)
-        .setLabel("🗳️ Начать голосование")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(`delayed_registration_${proposalId}`)
-        .setLabel("⏰ Регистрация вне срока")
-        .setStyle(ButtonStyle.Secondary)
-    );
+    let components = [];
+
+    if (isQuorumMet) {
+      // Если кворум собран, показываем кнопки для начала голосования и отсроченной регистрации
+      const buttonsRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`start_voting_${proposalId}`)
+          .setLabel("🗳️ Начать голосование")
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`delayed_registration_${proposalId}`)
+          .setLabel("⏰ Регистрация вне срока")
+          .setStyle(ButtonStyle.Secondary)
+      );
+      components = [buttonsRow];
+    } else {
+      // Если кворум не собран, показываем кнопку перезапуска регистрации
+      const buttonsRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`restart_registration_${proposalId}`)
+          .setLabel("🔄 Перезапустить регистрацию")
+          .setStyle(ButtonStyle.Primary)
+      );
+      components = [buttonsRow];
+    }
 
     await registrationMsg.edit({ 
       embeds: [embed], 
-      components: [buttonsRow] 
+      components: components 
     });
     
   } catch (e) {
     console.error("❌ Error finalizing proposal registration:", e);
+  }
+}
+
+// ================== НОВАЯ ФУНКЦИЯ handleRestartRegistrationButton ==================
+async function handleRestartRegistrationButton(interaction) {
+  const proposalId = interaction.customId.split("restart_registration_")[1];
+  const proposal = await db.getProposal(proposalId);
+  
+  if (!proposal) {
+    await interaction.reply({ content: "❌ Законопроект не найден.", flags: 64 });
+    return;
+  }
+  
+  const member = interaction.member;
+  if (!isChamberChairman(member, proposal.chamber) && !isAdmin(member)) {
+    await interaction.reply({ content: "❌ У вас нет прав для перезапуска регистрации.", flags: 64 });
+    return;
+  }
+  
+  // Показываем модальное окно для ввода длительности регистрации
+  const modal = new ModalBuilder()
+    .setCustomId(`restart_registration_modal_${proposalId}`)
+    .setTitle("Перезапуск регистрации");
+    
+  const durInput = new TextInputBuilder()
+    .setCustomId("registration_duration")
+    .setLabel("Время регистрации (1d, 1h, 1m, 30s)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("Пример: 1h30m или 5m");
+    
+  modal.addComponents(new ActionRowBuilder().addComponents(durInput));
+  
+  await interaction.showModal(modal);
+}
+
+// ================== НОВАЯ ФУНКЦИЯ handleRestartRegistrationModal ==================
+async function handleRestartRegistrationModal(interaction) {
+  await interaction.deferReply({ flags: 64 });
+  
+  const proposalId = interaction.customId.split("restart_registration_modal_")[1];
+  const durInput = interaction.fields.getTextInputValue("registration_duration").trim();
+  
+  const ms = parseCustomDuration(durInput);
+
+  const proposal = await db.getProposal(proposalId);
+  if (!proposal) {
+    await interaction.editReply({ content: "❌ Проект не найден." });
+    return;
+  }
+
+  try {
+    // Очищаем предыдущие регистрации для этого законопроекта
+    await db.deleteProposalRegistrations(proposalId);
+
+    // Запускаем процесс регистрации заново
+    const thread = await client.channels.fetch(proposal.threadid);
+    
+    const embed = new EmbedBuilder()
+      .setTitle(`📝 Регистрация на голосование по инициативе ${proposal.number}`)
+      .setDescription(`Открыта регистрация для участия в голосовании по данному законопроекту.\n\n**⏰ Время регистрации:** ${formatTimeLeft(ms)}`)
+      .addFields(
+        { name: "🕐 Начало", value: formatMoscowTime(Date.now()), inline: true },
+        { name: "🕐 Завершение", value: formatMoscowTime(Date.now() + ms), inline: true }
+      )
+      .setColor(COLORS.INFO)
+      .setFooter({ text: FOOTER })
+      .setTimestamp();
+      
+    const registerBtn = new ButtonBuilder()
+      .setCustomId(`register_proposal_${proposalId}`)
+      .setLabel("✅ Зарегистрироваться")
+      .setStyle(ButtonStyle.Success);
+      
+    const row = new ActionRowBuilder().addComponents(registerBtn);
+
+    const registrationMsg = await thread.send({ 
+      embeds: [embed], 
+      components: [row] 
+    });
+
+    // Start registration timer
+    await startProposalRegistrationTicker(proposalId, registrationMsg.id, ms);
+    
+    await interaction.editReply({ 
+      content: `✅ Регистрация перезапущена на ${formatTimeLeft(ms)}.` 
+    });
+  } catch (e) {
+    console.error("❌ Error restarting registration:", e);
+    await interaction.editReply({ content: "❌ Ошибка при перезапуске регистрации." });
   }
 }
 
