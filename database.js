@@ -711,6 +711,9 @@ class CongressDatabase {
     );
     return result.rows.length > 0;
   }
+  async deleteProposalRegistrations(proposalId) {
+  await this.query('DELETE FROM proposal_registrations WHERE proposalId = $1', [proposalId]);
+}
 
   async getProposalRegistrationCount(proposalId) {
     const result = await this.query(
