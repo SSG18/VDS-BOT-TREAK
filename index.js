@@ -338,20 +338,6 @@ async function canUserVote(proposal, userId, voting, meetingId = null) {
       meeting = await db.getLastMeetingByChamber(proposal.chamber);
     }
     
-    if (!meeting) {
-      return { canVote: false, reason: "❌ Нет активного заседания для этой палаты." };
-    }
-    
-    const inAgenda = await db.isProposalInAgenda(meeting.id, proposal.id);
-    if (!inAgenda) {
-      return { canVote: false, reason: "❌ Этот законопроект не в повестке текущего заседания." };
-    }
-    
-    const isRegistered = await db.isUserRegistered(meeting.id, userId);
-    if (!isRegistered) {
-      return { canVote: false, reason: "❌ Вы не зарегистрированы на текущее заседание." };
-    }
-    
     const chamberRoles = {
       'sf': [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE],
       'gd_rublevka': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.RUBLEVKA],
@@ -1953,18 +1939,7 @@ async function handleRegisterProposalButton(interaction) {
     const member = interaction.member;
     const chamber = proposal.chamber;
     
-    // Check if user is registered for the meeting
-    const lastMeeting = await db.getLastMeetingByChamber(chamber);
-    if (!lastMeeting || !lastMeeting.open) {
-      await interaction.reply({ content: "❌ Нет активного заседания для этой палаты.", flags: 64 });
-      return;
-    }
-    
-    const isRegisteredForMeeting = await db.isUserRegistered(lastMeeting.id, interaction.user.id);
-    if (!isRegisteredForMeeting) {
-      await interaction.reply({ content: "❌ Вы не зарегистрированы на текущее заседание.", flags: 64 });
-      return;
-    }
+
     
     const chamberRoles = {
       'sf': [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE],
