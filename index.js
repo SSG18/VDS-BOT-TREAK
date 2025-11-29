@@ -386,10 +386,9 @@ async function getChamberQuorum(chamber) {
     return Math.ceil(totalMembers / 3); // 1/3 от общего числа
   } catch (error) {
     console.error("❌ Error getting chamber quorum:", error);
-    return chamber === 'sf' ? 19 : 7; // fallback values
+    return chamber === 'sf' ? 19 : 7; // fallback values (1/3 от 56 и 20)
   }
 }
-
 async function getChamberTotalMembers(chamber) {
   try {
     const settings = await db.getChamberSettings(chamber);
@@ -525,7 +524,7 @@ async function addProposalEvent(proposalId, event) {
 async function createMeetingWithAgenda(interaction, chamber, title, meetingDate, selectedProposals) {
   const id = nanoid(8);
   
-  // Calculate quorum (1/3 of total members)
+  // Calculate quorum (1/3 of total members) - ОБНОВЛЕННЫЙ РАСЧЕТ
   const totalMembers = await getChamberTotalMembers(chamber);
   const quorum = Math.ceil(totalMembers / 3);
   
@@ -628,11 +627,11 @@ async function setChamberMembers(interaction) {
   try {
     await db.setChamberTotalMembers(chamber, count);
     
-    // Update quorum for existing open meetings
+    // Update quorum for existing open meetings - ОБНОВЛЕННЫЙ РАСЧЕТ КВОРУМА
     const openMeetings = await db.getOpenMeetings();
     for (const meeting of openMeetings) {
       if (meeting.chamber === chamber) {
-        const newQuorum = Math.ceil(count / 3);
+        const newQuorum = Math.ceil(count / 3); // 1/3 от нового числа
         await db.updateMeeting(meeting.id, { 
           totalMembers: count,
           quorum: newQuorum 
@@ -641,7 +640,7 @@ async function setChamberMembers(interaction) {
     }
     
     await interaction.editReply({ 
-      content: `✅ Количество членов палаты "${CHAMBER_NAMES[chamber]}" установлено: ${count}. Кворум: ${Math.ceil(count / 3)}` 
+      content: `✅ Количество членов палаты "${CHAMBER_NAMES[chamber]}" установлено: ${count}. Кворум: ${Math.ceil(count / 3)} (1/3)` 
     });
   } catch (error) {
     console.error("❌ Error setting chamber members:", error);
@@ -963,7 +962,7 @@ async function handleMeetingDetailsModal(interaction) {
     }
     
     const totalMembers = await getChamberTotalMembers(chamber);
-    const quorum = Math.ceil(totalMembers / 3);
+    const quorum = Math.ceil(totalMembers / 3); // 1/3 от общего числа
     
     const embed = new EmbedBuilder()
       .setTitle(`📅 Заседание: ${title}`)
@@ -972,7 +971,7 @@ async function handleMeetingDetailsModal(interaction) {
         { name: "🏛️ Палата", value: CHAMBER_NAMES[chamber], inline: true },
         { name: "📅 Дата проведения", value: meetingDate, inline: true },
         { name: "👥 Общее количество", value: String(totalMembers), inline: true },
-        { name: "📊 Требуемый кворум", value: `${quorum} (1/3)`, inline: true },
+        { name: "📊 Требуемый кворум", value: `${quorum} (1/3 от ${totalMembers})`, inline: true },
         { name: "📋 Статус", value: "Запланировано", inline: true },
         { name: "📜 Повестка", value: agendaText || "*Повестка не сформирована*", inline: false }
       )
@@ -1163,19 +1162,13 @@ async function updateVoteButtonStatus(proposalId) {
     
     const initialMessage = await thread.messages.fetch(proposal.initialmessageid);
     
-    const lastMeeting = await db.getLastMeetingByChamber(proposal.chamber);
-    let isInAgenda = false;
-    
-    if (lastMeeting && lastMeeting.open) {
-      isInAgenda = await db.isProposalInAgenda(lastMeeting.id, proposalId);
-    }
-    
+    // УБИРАЕМ ПРОВЕРКУ НА ПОВЕСТКУ - КНОПКА ВСЕГДА АКТИВНА
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`start_registration_${proposal.id}`)
         .setLabel("📝 Начать регистрацию")
         .setStyle(ButtonStyle.Success)
-        .setDisabled(!isInAgenda),
+        .setDisabled(false), // Всегда активно
       new ButtonBuilder()
         .setCustomId(`delete_proposal_${proposal.id}`)
         .setLabel("🗑️ Удалить/Отозвать")
@@ -1430,8 +1423,10 @@ async function createMeetingProtocol(meetingId) {
     for (const reg of registrations) {
       try {
         const user = await client.users.fetch(reg.userid);
-        protocolText += `• ${user.username}\n`;
+        // ИСПОЛЬЗУЕМ КЛИКАБЕЛЬНЫЕ ТЕГИ ДИСКОРДА
+        protocolText += `• <@${reg.userid}> (${user.username})\n`;
       } catch (error) {
+        // ЕСЛИ НЕ УДАЛОСЬ ПОЛУЧИТЬ ДАННЫЕ ПОЛЬЗОВАТЕЛЯ, ИСПОЛЬЗУЕМ ТОЛЬКО ТЕГ
         protocolText += `• <@${reg.userid}>\n`;
       }
     }
@@ -1663,8 +1658,10 @@ async function getRegistrationList(meetingId) {
   for (const reg of registrations) {
     try {
       const user = await client.users.fetch(reg.userid);
+      // ИСПОЛЬЗУЕМ КЛИКАБЕЛЬНЫЕ ТЕГИ ДИСКОРДА
       listText += `• <@${reg.userid}> (${user.username})\n`;
     } catch (error) {
+      // ЕСЛИ НЕ УДАЛОСЬ ПОЛУЧИТЬ ДАННЫЕ ПОЛЬЗОВАТЕЛЯ, ИСПОЛЬЗУЕМ ТОЛЬКО ТЕГ
       listText += `• <@${reg.userid}>\n`;
     }
   }
@@ -1688,18 +1685,7 @@ async function handleStartRegistrationButton(interaction) {
     return;
   }
   
-  const lastMeeting = await db.getLastMeetingByChamber(proposal.chamber);
-  if (!lastMeeting || !lastMeeting.open) {
-    await interaction.reply({ content: "❌ Нет активного заседания для этой палаты.", flags: 64 });
-    return;
-  }
-  
-  const inAgenda = await db.isProposalInAgenda(lastMeeting.id, pid);
-  if (!inAgenda) {
-    await interaction.reply({ content: "❌ Этот законопроект не в повестке текущего заседания.", flags: 64 });
-    return;
-  }
-  
+  // УБИРАЕМ ПРОВЕРКУ НА ПОВЕСТКУ И ЗАСЕДАНИЕ - РЕГИСТРАЦИЯ ВСЕГДА ДОСТУПНА
   const modal = new ModalBuilder()
     .setCustomId(`start_registration_modal_${pid}`)
     .setTitle("Настройки регистрации на голосование");
