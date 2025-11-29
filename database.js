@@ -14,10 +14,7 @@ class CongressDatabase {
       connectionTimeoutMillis: 2000,
     });
 
-    // флаг инициализации
     this.initialized = false;
-
-    // Старт инициализации, но без блокирующей рекурсии
     this.init().catch(err => {
       console.error('❌ DB init failed:', err);
     });
@@ -25,19 +22,16 @@ class CongressDatabase {
 
   async init() {
     if (this.initialized) return;
-    this.initialized = true; // помечаем как инициализированное, чтобы избежать повторных рекурсивных вызовов
+    this.initialized = true;
     try {
-      await this.createTables(); // createTables будет использовать this.pool.query (не this.query)
+      await this.createTables();
       console.log('✅ Database initialized successfully');
     } catch (error) {
       console.error('❌ Database initialization failed:', error);
-      // оставляем initialized = true чтобы не зацикливаться
     }
   }
 
-  // Универсальный метод запроса (используется в runtime)
   async query(text, params) {
-    // если ещё не инициализировано — дождёмся init (но init уже помечает initialized=true до выполнения DDL)
     if (!this.initialized) {
       await this.init();
     }
@@ -52,7 +46,6 @@ class CongressDatabase {
       return res;
     } catch (error) {
       console.error('❌ Query error:', error.message, text.substring(0, 120), params);
-      // Если таблиц нет, пробуем проинициализировать (без рекурсии, т.к. createTables использует pool.query)
       if (error.code === '42P01') {
         console.log('🔄 Table missing, attempting to reinitialize.');
         try {
@@ -67,11 +60,9 @@ class CongressDatabase {
     }
   }
 
-  // createTables выполняет DDL через this.pool.query — НЕ через this.query, чтобы избежать рекурсии
   async createTables() {
     console.log('🔄 Creating database tables (DDL via pool.query)...');
 
-    // Таблица для счетчиков предложений по палатам
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS chamber_counters (
         chamberId TEXT PRIMARY KEY,
@@ -79,7 +70,6 @@ class CongressDatabase {
       );
     `);
 
-    // Таблица для предложений
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS proposals (
         id TEXT PRIMARY KEY,
@@ -103,7 +93,6 @@ class CongressDatabase {
       );
     `);
 
-    // Таблица для пунктов количественного голосования
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS quantitative_items (
         id SERIAL PRIMARY KEY,
@@ -114,7 +103,6 @@ class CongressDatabase {
       );
     `);
 
-    // Таблица для голосований
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS votings (
         proposalId TEXT PRIMARY KEY REFERENCES proposals(id) ON DELETE CASCADE,
@@ -132,7 +120,6 @@ class CongressDatabase {
       );
     `);
 
-    // Таблица для голосов (уникальность по proposalId,userId,stage обеспечивает невозможность повтора)
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS votes (
         id SERIAL PRIMARY KEY,
@@ -146,7 +133,6 @@ class CongressDatabase {
       );
     `);
 
-    // Таблица для встреч
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS meetings (
         id TEXT PRIMARY KEY,
@@ -161,13 +147,12 @@ class CongressDatabase {
         expiresAt BIGINT NOT NULL DEFAULT 0,
         open BOOLEAN NOT NULL DEFAULT FALSE,
         quorum INTEGER DEFAULT 0,
-        totalMembers INTEGER DEFAULT 53,
+        totalMembers INTEGER DEFAULT 0,
         status TEXT DEFAULT 'planned',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    // Таблица для регистраций на встречи
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS meeting_registrations (
         meetingId TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
@@ -178,7 +163,6 @@ class CongressDatabase {
       );
     `);
 
-    // Таблица для настроек бота
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS bot_settings (
         key TEXT PRIMARY KEY,
@@ -187,19 +171,6 @@ class CongressDatabase {
       );
     `);
 
-    // Таблица для делегирования голосов
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS delegations (
-        id SERIAL PRIMARY KEY,
-        delegator_id TEXT NOT NULL,
-        delegate_id TEXT NOT NULL,
-        created_at BIGINT NOT NULL,
-        active BOOLEAN DEFAULT TRUE
-      );
-    `);
-
-    // Таблица для повестки заседания:
-    // важное: добавляем уникальное ограничение (meeting_id, proposal_id) — это решает ошибку ON CONFLICT
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS meeting_agendas (
         id SERIAL PRIMARY KEY,
@@ -210,18 +181,44 @@ class CongressDatabase {
       );
     `);
 
-    // Инициализация счетчиков (без рекурсивных вызовов)
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS proposal_registrations (
+        id SERIAL PRIMARY KEY,
+        proposalId TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
+        userId TEXT NOT NULL,
+        registeredAt BIGINT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(proposalId, userId)
+      );
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS chamber_settings (
+        chamberId TEXT PRIMARY KEY,
+        totalMembers INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
     const chambers = ['sf', 'gd_rublevka', 'gd_arbat', 'gd_patricki', 'gd_tverskoy'];
     for (const chamber of chambers) {
       await this.pool.query(
         `INSERT INTO chamber_counters (chamberId, value) VALUES ($1, 1) ON CONFLICT (chamberId) DO NOTHING;`,
         [chamber]
       );
+      
+      let defaultMembers = 56;
+      if (chamber !== 'sf') {
+        defaultMembers = 20;
+      }
+      
+      await this.pool.query(
+        `INSERT INTO chamber_settings (chamberId, totalMembers) VALUES ($1, $2) ON CONFLICT (chamberId) DO UPDATE SET totalMembers = EXCLUDED.totalMembers;`,
+        [chamber, defaultMembers]
+      );
     }
 
-    // Создаем индексы (через pool.query)
     await this.createIndexes();
-
     console.log('✅ All tables created successfully');
   }
 
@@ -236,11 +233,10 @@ class CongressDatabase {
       'CREATE INDEX IF NOT EXISTS idx_meetings_open ON meetings(open);',
       'CREATE INDEX IF NOT EXISTS idx_quantitative_items_proposal ON quantitative_items(proposalid);',
       'CREATE INDEX IF NOT EXISTS idx_meeting_registrations_meeting ON meeting_registrations(meetingid);',
-      'CREATE INDEX IF NOT EXISTS idx_delegations_delegator ON delegations(delegator_id);',
-      'CREATE INDEX IF NOT EXISTS idx_delegations_delegate ON delegations(delegate_id);',
-      'CREATE INDEX IF NOT EXISTS idx_delegations_active ON delegations(active);',
       'CREATE INDEX IF NOT EXISTS idx_meeting_agendas_meeting ON meeting_agendas(meeting_id);',
-      'CREATE INDEX IF NOT EXISTS idx_meeting_agendas_proposal ON meeting_agendas(proposal_id);'
+      'CREATE INDEX IF NOT EXISTS idx_meeting_agendas_proposal ON meeting_agendas(proposal_id);',
+      'CREATE INDEX IF NOT EXISTS idx_proposal_registrations_proposal ON proposal_registrations(proposalid);',
+      'CREATE INDEX IF NOT EXISTS idx_proposal_registrations_user ON proposal_registrations(userid);'
     ];
 
     for (const idx of indexes) {
@@ -253,7 +249,6 @@ class CongressDatabase {
     console.log('✅ Database indexes created');
   }
   
-  // Методы для работы с предложениями
   async getNextProposalNumber(chamber) {
     try {
       let result = await this.query(
@@ -427,7 +422,6 @@ class CongressDatabase {
     await this.query('DELETE FROM proposals WHERE id = $1', [id]);
   }
 
-  // Методы для работы с пунктами количественного голосования
   async addQuantitativeItem(item) {
     await this.query(
       'INSERT INTO quantitative_items (proposalId, itemIndex, text) VALUES ($1, $2, $3)',
@@ -443,7 +437,6 @@ class CongressDatabase {
     return result.rows;
   }
 
-  // Методы для работы с голосованиями
   async startVoting(voting) {
     await this.query(`
       INSERT INTO votings 
@@ -489,7 +482,6 @@ class CongressDatabase {
     return result.rows;
   }
 
-  // Методы для работы с голосами
   async addVote(vote) {
     const hasVoted = await this.hasUserVoted(vote.proposalId, vote.userId, vote.stage || 1);
     if (hasVoted) {
@@ -514,7 +506,6 @@ class CongressDatabase {
     return result.rows;
   }
 
-  // Методы для работы с встречами
   async createMeeting(meeting) {
     await this.query(`
       INSERT INTO meetings 
@@ -590,7 +581,6 @@ class CongressDatabase {
     await this.query('UPDATE meetings SET open = FALSE WHERE id = $1', [id]);
   }
 
-  // Методы для работы с регистрациями на встречи
   async registerForMeeting(meetingId, userId) {
     await this.query(`
       INSERT INTO meeting_registrations (meetingId, userId, registeredAt)
@@ -631,7 +621,6 @@ class CongressDatabase {
     return result.rows[0]?.registeredat || null;
   }
 
-  // Методы для работы с настройками
   async getBotSetting(key) {
     const result = await this.query('SELECT value FROM bot_settings WHERE key = $1', [key]);
     return result.rows[0]?.value || null;
@@ -646,52 +635,20 @@ class CongressDatabase {
     `, [key, value]);
   }
 
-  // Методы для работы с делегированием
-  async createDelegation(delegatorId, delegateId) {
-    await this.query(
-      'UPDATE delegations SET active = FALSE WHERE delegator_id = $1',
-      [delegatorId]
-    );
-    
-    await this.query(`
-      INSERT INTO delegations (delegator_id, delegate_id, created_at, active)
-      VALUES ($1, $2, $3, TRUE)
-    `, [delegatorId, delegateId, Date.now()]);
-  }
-
-  async removeDelegation(delegatorId) {
-    await this.query(
-      'UPDATE delegations SET active = FALSE WHERE delegator_id = $1',
-      [delegatorId]
-    );
-  }
-
-  async getActiveDelegation(delegatorId) {
-    const result = await this.query(`
-      SELECT * FROM delegations 
-      WHERE delegator_id = $1 AND active = TRUE 
-      LIMIT 1
-    `, [delegatorId]);
+  async getChamberSettings(chamberId) {
+    const result = await this.query('SELECT * FROM chamber_settings WHERE chamberId = $1', [chamberId]);
     return result.rows[0] || null;
   }
 
-  async getDelegationsByDelegate(delegateId) {
-    const result = await this.query(`
-      SELECT * FROM delegations 
-      WHERE delegate_id = $1 AND active = TRUE
-    `, [delegateId]);
-    return result.rows;
+  async setChamberTotalMembers(chamberId, totalMembers) {
+    await this.query(`
+      INSERT INTO chamber_settings (chamberId, totalMembers)
+      VALUES ($1, $2)
+      ON CONFLICT (chamberId) DO UPDATE SET
+        totalMembers = EXCLUDED.totalMembers
+    `, [chamberId, totalMembers]);
   }
 
-  async getAllActiveDelegations() {
-    const result = await this.query(`
-      SELECT * FROM delegations 
-      WHERE active = TRUE
-    `);
-    return result.rows;
-  }
-
-  // Методы для работы с повесткой заседания
   async addToAgenda(meetingId, proposalId) {
     await this.query(`
       INSERT INTO meeting_agendas (meeting_id, proposal_id)
@@ -729,6 +686,38 @@ class CongressDatabase {
       ORDER BY m.createdAt DESC
     `, [proposalId]);
     return result.rows;
+  }
+
+  async registerForProposalVoting(proposalId, userId) {
+    await this.query(`
+      INSERT INTO proposal_registrations (proposalId, userId, registeredAt)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (proposalId, userId) DO NOTHING
+    `, [proposalId, userId, Date.now()]);
+  }
+
+  async getProposalRegistrations(proposalId) {
+    const result = await this.query(
+      'SELECT userId FROM proposal_registrations WHERE proposalId = $1',
+      [proposalId]
+    );
+    return result.rows;
+  }
+
+  async isUserRegisteredForProposal(proposalId, userId) {
+    const result = await this.query(
+      'SELECT 1 FROM proposal_registrations WHERE proposalId = $1 AND userId = $2',
+      [proposalId, userId]
+    );
+    return result.rows.length > 0;
+  }
+
+  async getProposalRegistrationCount(proposalId) {
+    const result = await this.query(
+      'SELECT COUNT(*) as count FROM proposal_registrations WHERE proposalId = $1',
+      [proposalId]
+    );
+    return parseInt(result.rows[0].count);
   }
 
   async close() {
