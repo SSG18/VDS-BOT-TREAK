@@ -60,7 +60,7 @@ const MEETING_MENTION_ROLES = {
   'gd_tverskoy': process.env.GD_TVERSKOY_MENTION_ROLE_ID
 };
 
-const DELAYED_REGISTRATION_CHANNEL_ID = '1441159654284464148';
+const DELAYED_REGISTRATION_CHANNEL_ID = '1444683721868316772';
 
 const ROLES = {
   SENATOR: process.env.SENATOR_ROLE_ID,
@@ -1228,7 +1228,10 @@ async function handleModalSubmit(interaction) {
     await handleMeetingDetailsModal(interaction);
   } else if (interaction.customId.startsWith("start_registration_modal_")) {
     await handleStartRegistrationModal(interaction);
-  } else if (interaction.customId.startsWith("restart_registration_modal_")) {
+  } else if (interaction.customId.startsWith("quantitative_runoff_modal_")) {
+  await handleQuantitativeRunoffModal(interaction);
+  }
+  else if (interaction.customId.startsWith("restart_registration_modal_")) {
     await handleRestartRegistrationModal(interaction);
   }
 }
@@ -1307,6 +1310,62 @@ async function handleMeetingDetailsModal(interaction) {
   } catch (error) {
     console.error("❌ Error creating meeting from details:", error);
     await interaction.editReply({ content: "❌ Ошибка при создании заседания." });
+  }
+}
+
+async function handleQuantitativeRunoffModal(interaction) {
+  await interaction.deferReply({ flags: 64 });
+  
+  const proposalId = interaction.customId.split("quantitative_runoff_modal_")[1];
+  const durationInput = interaction.fields.getTextInputValue("runoff_duration").trim();
+  
+  const ms = parseCustomDuration(durationInput);
+
+  const proposal = await db.getProposal(proposalId);
+  if (!proposal) {
+    await interaction.editReply({ content: "❌ Законопроект не найден." });
+    return;
+  }
+
+  try {
+    // Получаем результаты первого тура для определения пунктов для второго тура
+    const voting = await db.getVoting(proposalId);
+    const items = await db.getQuantitativeItems(proposalId);
+    const votes = await db.getVotes(proposalId);
+    
+    const itemVotes = {};
+    items.forEach(item => {
+      itemVotes[item.itemindex] = 0;
+    });
+    
+    votes.forEach(vote => {
+      if (vote.votetype.startsWith('item_')) {
+        const itemIndex = parseInt(vote.votetype.split('_')[1]);
+        if (itemVotes[itemIndex] !== undefined) {
+          itemVotes[itemIndex]++;
+        }
+      }
+    });
+    
+    // Определяем два лучших пункта
+    const itemsWithVotes = [];
+    for (const [itemIndex, voteCount] of Object.entries(itemVotes)) {
+      itemsWithVotes.push({
+        index: parseInt(itemIndex),
+        votes: voteCount,
+        text: items.find(item => item.itemindex === parseInt(itemIndex))?.text || 'Неизвестный пункт'
+      });
+    }
+    
+    itemsWithVotes.sort((a, b) => b.votes - a.votes);
+    const winningItems = itemsWithVotes.slice(0, 2);
+    
+    await startQuantitativeRunoff(proposalId, winningItems, ms);
+    await interaction.editReply({ content: "✅ Второй тур рейтингового голосования запущен." });
+    
+  } catch (error) {
+    console.error("❌ Error starting quantitative runoff:", error);
+    await interaction.editReply({ content: "❌ Ошибка при запуске второго тура." });
   }
 }
 
@@ -1661,7 +1720,7 @@ async function handleButton(interaction) {
   }
 }
 
-async function startQuantitativeRunoff(proposalId, winningItems) {
+async function startQuantitativeRunoff(proposalId, winningItems, durationMs) {
   const proposal = await db.getProposal(proposalId);
   if (!proposal) return;
 
@@ -1669,8 +1728,8 @@ async function startQuantitativeRunoff(proposalId, winningItems) {
     proposalId: proposalId,
     open: true,
     startedAt: Date.now(),
-    durationMs: 300000, // 5 минут
-    expiresAt: Date.now() + 300000,
+    durationMs: durationMs,
+    expiresAt: Date.now() + durationMs,
     messageId: null,
     isSecret: false,
     formula: '0',
@@ -1682,9 +1741,11 @@ async function startQuantitativeRunoff(proposalId, winningItems) {
   try {
     const thread = await client.channels.fetch(proposal.threadid);
     
+    const timeText = `🕐 **Начало:** ${formatMoscowTime(Number(voting.startedat))}\n⏰ **Завершение:** ${formatMoscowTime(voting.expiresAt)}`;
+    
     const embed = new EmbedBuilder()
       .setTitle(`🗳️ Второй тур рейтингового голосования — ${proposal.number}`)
-      .setDescription(`Несколько пунктов набрали большинство голосов. Во втором туре выберите ОДИН наиболее предпочтительный пункт.`)
+      .setDescription(`Несколько пунктов набрали большинство голосов. Во втором туре выберите ОДИН наиболее предпочтительный пункт.\n\n${timeText}`)
       .setColor(COLORS.INFO)
       .setTimestamp();
     
@@ -1737,7 +1798,9 @@ async function startQuantitativeRunoff(proposalId, winningItems) {
     voting.runoffMessageId = runoffMsg.id;
     await db.startVoting(voting);
 
-    await startVoteTicker(proposalId);
+    if (durationMs > 0) {
+      await startVoteTicker(proposalId);
+    }
     
   } catch (e) {
     console.error("❌ Error starting quantitative runoff:", e);
@@ -1745,62 +1808,35 @@ async function startQuantitativeRunoff(proposalId, winningItems) {
 }
 
 async function handleStartQuantitativeRunoffButton(interaction) {
-  await interaction.deferReply({ flags: 64 });
-  
   const proposalId = interaction.customId.split("start_quantitative_runoff_")[1];
   const proposal = await db.getProposal(proposalId);
   
   if (!proposal) {
-    await interaction.editReply({ content: "❌ Законопроект не найден." });
+    await interaction.reply({ content: "❌ Законопроект не найден.", flags: 64 });
     return;
   }
   
   const member = interaction.member;
   if (!isChamberChairman(member, proposal.chamber) && !isAdmin(member)) {
-    await interaction.editReply({ content: "❌ У вас нет прав для запуска второго тура." });
+    await interaction.reply({ content: "❌ У вас нет прав для запуска второго тура.", flags: 64 });
     return;
   }
   
-  try {
-    // Получаем результаты первого тура для определения пунктов для второго тура
-    const voting = await db.getVoting(proposalId);
-    const items = await db.getQuantitativeItems(proposalId);
-    const votes = await db.getVotes(proposalId);
+  // Показываем модальное окно для ввода длительности второго тура
+  const modal = new ModalBuilder()
+    .setCustomId(`quantitative_runoff_modal_${proposalId}`)
+    .setTitle("Длительность второго тура");
     
-    const itemVotes = {};
-    items.forEach(item => {
-      itemVotes[item.itemindex] = 0;
-    });
+  const durationInput = new TextInputBuilder()
+    .setCustomId("runoff_duration")
+    .setLabel("Время голосования (1d, 1h, 1m, 30s)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("Пример: 1h30m или 5m");
     
-    votes.forEach(vote => {
-      if (vote.votetype.startsWith('item_')) {
-        const itemIndex = parseInt(vote.votetype.split('_')[1]);
-        if (itemVotes[itemIndex] !== undefined) {
-          itemVotes[itemIndex]++;
-        }
-      }
-    });
-    
-    // Определяем два лучших пункта
-    const itemsWithVotes = [];
-    for (const [itemIndex, voteCount] of Object.entries(itemVotes)) {
-      itemsWithVotes.push({
-        index: parseInt(itemIndex),
-        votes: voteCount,
-        text: items.find(item => item.itemindex === parseInt(itemIndex))?.text || 'Неизвестный пункт'
-      });
-    }
-    
-    itemsWithVotes.sort((a, b) => b.votes - a.votes);
-    const winningItems = itemsWithVotes.slice(0, 2);
-    
-    await startQuantitativeRunoff(proposalId, winningItems);
-    await interaction.editReply({ content: "✅ Второй тур рейтингового голосования запущен." });
-    
-  } catch (error) {
-    console.error("❌ Error starting quantitative runoff:", error);
-    await interaction.editReply({ content: "❌ Ошибка при запуске второго тура." });
-  }
+  modal.addComponents(new ActionRowBuilder().addComponents(durationInput));
+  
+  await interaction.showModal(modal);
 }
 
 
@@ -4697,15 +4733,17 @@ async function finalizeQuantitativeRunoff(proposalId) {
   try {
     const thread = await client.channels.fetch(proposal.threadid);
     
+    // Отправляем новое сообщение с результатами
+    await thread.send({ embeds: [embed] });
+    
+    // Обновляем сообщение голосования, убирая кнопки
     if (voting?.runoffmessageid) {
       try {
         const runoffMsg = await thread.messages.fetch(voting.runoffmessageid);
-        await runoffMsg.edit({ content: null, embeds: [embed], components: [] });
+        await runoffMsg.edit({ components: [] });
       } catch (e) {
-        await thread.send({ embeds: [embed] });
+        // Если не удалось обновить, игнорируем
       }
-    } else {
-      await thread.send({ embeds: [embed] });
     }
 
     await db.endVoting(proposalId, Date.now());
