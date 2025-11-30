@@ -1390,30 +1390,64 @@ async function handleProposalModal(interaction) {
 async function updateVoteButtonStatus(proposalId) {
   try {
     const proposal = await db.getProposal(proposalId);
-    if (!proposal || !proposal.threadid || !proposal.initialmessageid) return;
+    if (!proposal || !proposal.threadid || !proposal.initialmessageid) {
+      return;
+    }
+
+    // Проверяем существование канала
+    let thread;
+    try {
+      thread = await client.channels.fetch(proposal.threadid);
+    } catch (error) {
+      if (error.code === 10003) { // Unknown Channel
+        console.warn(`⚠️ Thread not found for proposal ${proposalId}: ${proposal.threadid}`);
+        return;
+      }
+      throw error;
+    }
     
-    const thread = await client.channels.fetch(proposal.threadid);
     if (thread.archived) return;
+
+    // Проверяем существование сообщения
+    let initialMessage;
+    try {
+      initialMessage = await thread.messages.fetch(proposal.initialmessageid);
+    } catch (error) {
+      if (error.code === 10008) { // Unknown Message
+        console.warn(`⚠️ Initial message not found for proposal ${proposalId}: ${proposal.initialmessageid}`);
+        return;
+      }
+      throw error;
+    }
+
+    const voting = await db.getVoting(proposalId);
+    const hasVotes = await db.getVotes(proposalId);
     
-    const initialMessage = await thread.messages.fetch(proposal.initialmessageid);
+    const canRestart = hasVotes.length > 0 || (voting && voting.open);
     
-    // УБИРАЕМ ПРОВЕРКУ НА ПОВЕСТКУ - КНОПКА ВСЕГДА АКТИВНА
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`start_registration_${proposal.id}`)
         .setLabel("📝 Начать регистрацию")
         .setStyle(ButtonStyle.Success)
-        .setDisabled(false), // Всегда активно
+        .setDisabled(false),
       new ButtonBuilder()
         .setCustomId(`delete_proposal_${proposal.id}`)
         .setLabel("🗑️ Удалить/Отозвать")
         .setStyle(ButtonStyle.Danger)
-        .setDisabled(false)
+        .setDisabled(false),
+      new ButtonBuilder()
+        .setCustomId(`restart_voting_${proposal.id}`)
+        .setLabel("🔄 Переголосование")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!canRestart)
     );
     
     await initialMessage.edit({ components: [row] });
   } catch (error) {
-    if (error.code !== 50083 && error.code !== 10008) {
+    if (error.code === 10003 || error.code === 10008) {
+      console.warn(`⚠️ Channel or message not found for proposal ${proposalId}`);
+    } else {
       console.error(`❌ Error updating vote button for proposal ${proposalId}:`, error);
     }
   }
@@ -2704,25 +2738,49 @@ async function startVoteTicker(proposalId) {
   }
 
   const updateFn = async () => {
-    const proposal = await db.getProposal(proposalId);
-    const voting = await db.getVoting(proposalId);
-    
-    if (!proposal || !voting?.open) {
-      if (voteTimers.has(proposalId)) {
-        clearInterval(voteTimers.get(proposalId));
-        voteTimers.delete(proposalId);
-      }
-      return;
-    }
-
-    if (voting.durationms === 0) return;
-
-    const left = voting.expiresat - Date.now();
     try {
-      const thread = await client.channels.fetch(proposal.threadid);
+      const proposal = await db.getProposal(proposalId);
+      const voting = await db.getVoting(proposalId);
+      
+      if (!proposal || !voting?.open) {
+        if (voteTimers.has(proposalId)) {
+          clearInterval(voteTimers.get(proposalId));
+          voteTimers.delete(proposalId);
+        }
+        return;
+      }
+
+      if (voting.durationms === 0) return;
+
+      const left = voting.expiresat - Date.now();
+      
+      // Проверяем существование канала
+      let thread;
+      try {
+        thread = await client.channels.fetch(proposal.threadid);
+      } catch (error) {
+        if (error.code === 10003) {
+          console.warn(`⚠️ Thread not found for vote ticker ${proposalId}, stopping timer`);
+          clearInterval(voteTimers.get(proposalId));
+          voteTimers.delete(proposalId);
+          return;
+        }
+        throw error;
+      }
       
       const messageId = voting.stage === 2 && voting.runoffmessageid ? voting.runoffmessageid : voting.messageid;
-      const voteMsg = await thread.messages.fetch(messageId);
+      
+      // Проверяем существование сообщения
+      let voteMsg;
+      try {
+        voteMsg = await thread.messages.fetch(messageId);
+      } catch (error) {
+        if (error.code === 10008) {
+          console.warn(`⚠️ Vote message not found for proposal ${proposalId}`);
+          return;
+        }
+        throw error;
+      }
       
       if (left <= 0) {
         await finalizeVote(proposalId);
@@ -2752,10 +2810,49 @@ async function startVoteTicker(proposalId) {
     }
   };
 
-  await updateFn();
-  const id = setInterval(updateFn, 10_000);
-  voteTimers.set(proposalId, id);
+  try {
+    await updateFn();
+    const id = setInterval(updateFn, 10_000);
+    voteTimers.set(proposalId, id);
+  } catch (error) {
+    console.error(`❌ Error starting vote ticker for ${proposalId}:`, error);
+  }
 }
+
+async function cleanupInvalidProposals() {
+  try {
+    const allProposals = await db.getAllProposals();
+    let cleanedCount = 0;
+    
+    for (const proposal of allProposals) {
+      if (proposal.threadid) {
+        try {
+          await client.channels.fetch(proposal.threadid);
+        } catch (error) {
+          if (error.code === 10003) {
+            console.warn(`🔄 Cleaning up proposal with invalid channel: ${proposal.id}`);
+            // Можно обновить статус предложения или удалить его
+            // await db.updateProposalStatus(proposal.id, 'Архивирован');
+            cleanedCount++;
+          }
+        }
+      }
+    }
+    
+    if (cleanedCount > 0) {
+      console.log(`✅ Cleaned up ${cleanedCount} proposals with invalid channels`);
+    }
+  } catch (error) {
+    console.error("❌ Error cleaning up invalid proposals:", error);
+  }
+}
+
+// Вызовите эту функцию в ClientReady после restoreAllTimers:
+client.on(Events.ClientReady, async () => {
+  console.log(`✅ Bot ready: ${client.user.tag}`);
+  await restoreAllTimers();
+  await cleanupInvalidProposals();
+});
 
 async function finalizeVote(proposalId) {
   const proposal = await db.getProposal(proposalId);
@@ -3118,22 +3215,6 @@ async function handleChairmanVoteButton(interaction) {
     console.error("❌ Error in chairman vote button:", error);
     await interaction.editReply({ content: "❌ Ошибка при обработке решающего голоса." });
   }
-}
-
-async function getVoteCounts(proposalId, stage = 1) {
-  const votes = await db.getVotes(proposalId, stage);
-  
-  let forCount = 0;
-  let againstCount = 0;
-  let abstainCount = 0;
-  
-  for (const vote of votes) {
-    if (vote.votetype === 'for') forCount++;
-    else if (vote.votetype === 'against') againstCount++;
-    else if (vote.votetype === 'abstain') abstainCount++;
-  }
-  
-  return { forCount, againstCount, abstainCount, totalVoted: forCount + againstCount + abstainCount };
 }
 
 async function handleEndVoteButton(interaction) {
@@ -4413,24 +4494,61 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
 // ================== INITIALIZATION ==================
 async function restoreAllTimers() {
   try {
+    console.log('🔄 Restoring timers after bot restart...');
+    
     const openMeetings = await db.getOpenMeetings();
+    let restoredMeetings = 0;
     for (const meeting of openMeetings) {
-      startMeetingTicker(meeting.id).catch(console.error);
-    }
-    
-    const openVotings = await db.getOpenVotings();
-    for (const voting of openVotings) {
-      startVoteTicker(voting.proposalid).catch(console.error);
-    }
-    
-    const allProposals = await db.getAllProposals();
-    for (const proposal of allProposals) {
-      if (proposal.status === 'На рассмотрении') {
-        await updateVoteButtonStatus(proposal.id);
+      try {
+        await startMeetingTicker(meeting.id);
+        restoredMeetings++;
+      } catch (error) {
+        console.error(`❌ Error restoring meeting timer for ${meeting.id}:`, error.message);
       }
     }
     
-    console.log(`✅ Restored ${openMeetings.length} meetings and ${openVotings.length} votes`);
+    const openVotings = await db.getOpenVotings();
+    let restoredVotes = 0;
+    for (const voting of openVotings) {
+      try {
+        await startVoteTicker(voting.proposalid);
+        restoredVotes++;
+      } catch (error) {
+        console.error(`❌ Error restoring vote timer for ${voting.proposalid}:`, error.message);
+      }
+    }
+    
+    const allProposals = await db.getAllProposals();
+    let updatedButtons = 0;
+    let skippedButtons = 0;
+    
+    for (const proposal of allProposals) {
+      if (proposal.status === 'На рассмотрении') {
+        try {
+          // Проверяем существование канала перед обновлением кнопок
+          if (proposal.threadid) {
+            try {
+              const thread = await client.channels.fetch(proposal.threadid);
+              if (thread) {
+                await updateVoteButtonStatus(proposal.id);
+                updatedButtons++;
+              }
+            } catch (channelError) {
+              if (channelError.code === 10003) {
+                console.warn(`⚠️ Skipping proposal ${proposal.id} - channel not found: ${proposal.threadid}`);
+                skippedButtons++;
+                continue;
+              }
+              throw channelError;
+            }
+          }
+        } catch (error) {
+          console.error(`❌ Error updating vote button for proposal ${proposal.id}:`, error.message);
+        }
+      }
+    }
+    
+    console.log(`✅ Restored ${restoredMeetings} meetings, ${restoredVotes} votes, updated ${updatedButtons} proposal buttons, skipped ${skippedButtons} invalid channels`);
   } catch (error) {
     console.error("❌ Error restoring timers:", error);
   }
