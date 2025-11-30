@@ -281,6 +281,29 @@ for (const chamber of chambers) {
     }
   }
 
+  async getVotesAllStages(proposalId) {
+  const result = await this.query(
+    'SELECT * FROM votes WHERE proposalId = $1 ORDER BY stage ASC, createdAt ASC',
+    [proposalId]
+  );
+  return result.rows;
+}
+
+  async getProposalByThreadId(threadId) {
+    const result = await this.query('SELECT * FROM proposals WHERE threadId = $1', [threadId]);
+    if (result.rows.length === 0) return null;
+    
+    const proposal = result.rows[0];
+    if (proposal.events) {
+      proposal.events = typeof proposal.events === 'string' 
+        ? JSON.parse(proposal.events) 
+        : proposal.events;
+    } else {
+      proposal.events = [];
+    }
+    return proposal;
+  }
+
   async getVotes(proposalId, stage = 1, limit = 1000) {
     const result = await this.query(
       'SELECT * FROM votes WHERE proposalId = $1 AND stage = $2 ORDER BY createdAt ASC LIMIT $3',
