@@ -544,155 +544,168 @@ async function updateHistoryMessage(proposalId) {
 }
 
 async function handleInfoCommand(interaction) {
-  await interaction.deferReply({ flags: 64 });
-  
-  const member = interaction.member;
-  const isSysAdmin = isAdmin(member);
-  const isPresident = interaction.user.id === ROLES.PRESIDENT;
-  
-  if (!isSysAdmin && !isPresident) {
-    await interaction.editReply({ content: "❌ Функция еще не реализована." });
-    return;
-  }
-  
-  // Проверяем, что команда используется в ветке законопроекта
-  if (!interaction.channel.isThread()) {
-    await interaction.editReply({ content: "❌ Эту команду можно использовать только в ветке законопроекта." });
-    return;
-  }
-  
   try {
-    // Ищем законопроект по ID ветки
-    const proposal = await db.getProposalByThreadId(interaction.channel.id);
-    if (!proposal) {
-      await interaction.editReply({ content: "❌ Текущая ветка не связана с законопроектом." });
+    // Отвечаем сразу, чтобы Discord не показывал "Приложение не отвечает"
+    await interaction.deferReply({ ephemeral: true });
+    
+    const member = interaction.member;
+    const isSysAdmin = isAdmin(member);
+    const isPresident = interaction.user.id === ROLES.PRESIDENT;
+    
+    if (!isSysAdmin && !isPresident) {
+      await interaction.editReply({ content: "❌ Функция еще не реализована." });
       return;
     }
     
-    // Получаем все голоса по законопроекту (все этапы)
-    const votes = await db.getVotesAllStages(proposal.id);
-    
-    if (votes.length === 0) {
-      await interaction.editReply({ content: "❌ По этому законопроекту еще нет голосов." });
+    // Проверяем, что команда используется в ветке законопроекта
+    if (!interaction.channel.isThread()) {
+      await interaction.editReply({ content: "❌ Эту команду можно использовать только в ветке законопроекта." });
       return;
     }
     
-    // Получаем информацию о голосовании
-    const voting = await db.getVoting(proposal.id);
-    const isSecret = voting?.issecret || false;
-    
-    // Формируем поименный список
-    let voteList = `🔐 **Поименный список голосования**\n`;
-    voteList += `**Законопроект:** ${proposal.number}\n`;
-    voteList += `**Название:** ${proposal.name}\n`;
-    voteList += `**Палата:** ${CHAMBER_NAMES[proposal.chamber]}\n`;
-    voteList += `**Тип голосования:** ${isSecret ? "Тайное" : "Открытое"}\n`;
-    voteList += `**Всего голосов:** ${votes.length}\n\n`;
-    
-    // Группируем по этапам
-    const stages = {};
-    votes.forEach(vote => {
-      if (!stages[vote.stage]) {
-        stages[vote.stage] = [];
-      }
-      stages[vote.stage].push(vote);
-    });
-    
-    for (const [stage, stageVotes] of Object.entries(stages)) {
-      const stageName = stage === '1' ? 'Основное голосование' : `Второй тур (этап ${stage})`;
-      voteList += `**${stageName}:**\n`;
-      
-      // Сортируем по времени голосования
-      stageVotes.sort((a, b) => a.createdat - b.createdat);
-      
-      for (const vote of stageVotes) {
-        try {
-          const user = await client.users.fetch(vote.userid);
-          const voteType = getVoteTypeText(vote.votetype);
-          const time = formatMoscowTime(vote.createdat);
-          
-          voteList += `• <@${vote.userid}> (${user.username}) - ${voteType} - ${time}\n`;
-        } catch (error) {
-          // Если не удалось получить информацию о пользователе
-          const voteType = getVoteTypeText(vote.votetype);
-          const time = formatMoscowTime(vote.createdat);
-          voteList += `• <@${vote.userid}> - ${voteType} - ${time}\n`;
-        }
-      }
-      voteList += '\n';
-    }
-    
-    // Статистика по голосам (общая по всем этапам)
-    const voteStats = {};
-    votes.forEach(vote => {
-      const type = getVoteTypeText(vote.votetype);
-      voteStats[type] = (voteStats[type] || 0) + 1;
-    });
-    
-    voteList += `**Общая статистика:**\n`;
-    for (const [type, count] of Object.entries(voteStats)) {
-      voteList += `• ${type}: ${count}\n`;
-    }
-    
-    // Добавляем информацию о формуле и результатах если голосование завершено
-    if (voting && !voting.open) {
-      const { forCount, againstCount, abstainCount } = await getVoteCounts(proposal.id);
-      voteList += `\n**Итоговые результаты:**\n`;
-      voteList += `• ✅ За: ${forCount}\n`;
-      voteList += `• ❌ Против: ${againstCount}\n`;
-      voteList += `• ⚪ Воздержалось: ${abstainCount}\n`;
-      
-      if (voting.formula) {
-        voteList += `• 📋 Формула: ${getFormulaDescription(voting.formula)}\n`;
-      }
-    }
-    
-    // Отправляем в личные сообщения
     try {
-      // Разбиваем сообщение если оно слишком длинное
-      if (voteList.length > 2000) {
-        const parts = [];
-        let currentPart = '';
-        const lines = voteList.split('\n');
-        
-        for (const line of lines) {
-          if ((currentPart + line + '\n').length > 2000) {
-            parts.push(currentPart);
-            currentPart = line + '\n';
-          } else {
-            currentPart += line + '\n';
-          }
-        }
-        
-        if (currentPart.length > 0) {
-          parts.push(currentPart);
-        }
-        
-        for (let i = 0; i < parts.length; i++) {
-          if (i === 0) {
-            await interaction.user.send({ content: parts[i] });
-          } else {
-            await interaction.user.send({ content: `*(продолжение ${i + 1}/${parts.length})*\n${parts[i]}` });
-          }
-        }
-      } else {
-        await interaction.user.send({ content: voteList });
+      // Ищем законопроект по ID ветки
+      const proposal = await db.getProposalByThreadId(interaction.channel.id);
+      if (!proposal) {
+        await interaction.editReply({ content: "❌ Текущая ветка не связана с законопроектом." });
+        return;
       }
       
-      await interaction.editReply({ 
-        content: `✅ Поименный список голосования по законопроекту ${proposal.number} отправлен вам в личные сообщения.` 
+      // Получаем все голоса по законопроекту (все этапы)
+      const votes = await db.getVotesAllStages(proposal.id);
+      
+      if (votes.length === 0) {
+        await interaction.editReply({ content: "❌ По этому законопроекту еще нет голосов." });
+        return;
+      }
+      
+      // Получаем информацию о голосовании
+      const voting = await db.getVoting(proposal.id);
+      const isSecret = voting?.issecret || false;
+      
+      // Формируем поименный список
+      let voteList = `🔐 **Поименный список голосования**\n`;
+      voteList += `**Законопроект:** ${proposal.number}\n`;
+      voteList += `**Название:** ${proposal.name}\n`;
+      voteList += `**Палата:** ${CHAMBER_NAMES[proposal.chamber]}\n`;
+      voteList += `**Тип голосования:** ${isSecret ? "Тайное" : "Открытое"}\n`;
+      voteList += `**Всего голосов:** ${votes.length}\n\n`;
+      
+      // Группируем по этапам
+      const stages = {};
+      votes.forEach(vote => {
+        if (!stages[vote.stage]) {
+          stages[vote.stage] = [];
+        }
+        stages[vote.stage].push(vote);
       });
+      
+      for (const [stage, stageVotes] of Object.entries(stages)) {
+        const stageName = stage === '1' ? 'Основное голосование' : `Второй тур (этап ${stage})`;
+        voteList += `**${stageName}:**\n`;
+        
+        // Сортируем по времени голосования
+        stageVotes.sort((a, b) => a.createdat - b.createdat);
+        
+        for (const vote of stageVotes) {
+          try {
+            const user = await client.users.fetch(vote.userid);
+            const voteType = getVoteTypeText(vote.votetype);
+            const time = formatMoscowTime(vote.createdat);
+            
+            voteList += `• <@${vote.userid}> (${user.username}) - ${voteType} - ${time}\n`;
+          } catch (error) {
+            // Если не удалось получить информацию о пользователе
+            const voteType = getVoteTypeText(vote.votetype);
+            const time = formatMoscowTime(vote.createdat);
+            voteList += `• <@${vote.userid}> - ${voteType} - ${time}\n`;
+          }
+        }
+        voteList += '\n';
+      }
+      
+      // Статистика по голосам (общая по всем этапам)
+      const voteStats = {};
+      votes.forEach(vote => {
+        const type = getVoteTypeText(vote.votetype);
+        voteStats[type] = (voteStats[type] || 0) + 1;
+      });
+      
+      voteList += `**Общая статистика:**\n`;
+      for (const [type, count] of Object.entries(voteStats)) {
+        voteList += `• ${type}: ${count}\n`;
+      }
+      
+      // Добавляем информацию о формуле и результатах если голосование завершено
+      if (voting && !voting.open) {
+        const { forCount, againstCount, abstainCount } = await getVoteCounts(proposal.id);
+        voteList += `\n**Итоговые результаты:**\n`;
+        voteList += `• ✅ За: ${forCount}\n`;
+        voteList += `• ❌ Против: ${againstCount}\n`;
+        voteList += `• ⚪ Воздержалось: ${abstainCount}\n`;
+        
+        if (voting.formula) {
+          voteList += `• 📋 Формула: ${getFormulaDescription(voting.formula)}\n`;
+        }
+      }
+      
+      // Отправляем в личные сообщения
+      try {
+        // Разбиваем сообщение если оно слишком длинное
+        if (voteList.length > 2000) {
+          const parts = [];
+          let currentPart = '';
+          const lines = voteList.split('\n');
+          
+          for (const line of lines) {
+            if ((currentPart + line + '\n').length > 2000) {
+              parts.push(currentPart);
+              currentPart = line + '\n';
+            } else {
+              currentPart += line + '\n';
+            }
+          }
+          
+          if (currentPart.length > 0) {
+            parts.push(currentPart);
+          }
+          
+          for (let i = 0; i < parts.length; i++) {
+            if (i === 0) {
+              await interaction.user.send({ content: parts[i] });
+            } else {
+              await interaction.user.send({ content: `*(продолжение ${i + 1}/${parts.length})*\n${parts[i]}` });
+            }
+          }
+        } else {
+          await interaction.user.send({ content: voteList });
+        }
+        
+        await interaction.editReply({ 
+          content: `✅ Поименный список голосования по законопроекту ${proposal.number} отправлен вам в личные сообщения.` 
+        });
+        
+      } catch (error) {
+        console.error("❌ Error sending DM:", error);
+        await interaction.editReply({ 
+          content: "❌ Не удалось отправить сообщение в личные сообщения. Убедитесь, что у вас открыты ЛС для этого сервера." 
+        });
+      }
       
     } catch (error) {
-      console.error("❌ Error sending DM:", error);
-      await interaction.editReply({ 
-        content: "❌ Не удалось отправить сообщение в личные сообщения. Убедитесь, что у вас открыты ЛС для этого сервера." 
-      });
+      console.error("❌ Error in info command:", error);
+      await interaction.editReply({ content: "❌ Ошибка при получении информации о голосовании." });
     }
     
   } catch (error) {
-    console.error("❌ Error in info command:", error);
-    await interaction.editReply({ content: "❌ Ошибка при получении информации о голосовании." });
+    console.error("❌ Critical error in info command:", error);
+    // Если даже deferReply не сработал, пытаемся ответить обычным способом
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ 
+        content: "❌ Произошла критическая ошибка при выполнении команды.", 
+        ephemeral: true 
+      });
+    }
   }
 }
 
@@ -819,7 +832,9 @@ async function handleSlashCommand(interaction) {
     await resetMeetingRoles(interaction);
   } else if (cmd === "set") {
     await setChamberMembers(interaction);
-  }
+  } else if (cmd === "info") {
+  await handleInfoCommand(interaction);
+}
 }
 
 async function setChamberMembers(interaction) {
@@ -2511,18 +2526,24 @@ async function handleRegularVoteButtons(interaction) {
   }
 }
 
-function getVoteTypeText(voteType) {
-  switch(voteType) {
-    case 'for': return '✅ ЗА';
-    case 'against': return '❌ ПРОТИВ';
-    case 'abstain': return '⚪ ВОЗДЕРЖАЛСЯ';
-    default:
-      // Для количественного голосования
-      if (voteType.startsWith('item_')) {
-        const itemIndex = voteType.split('_')[1];
-        return `📊 Пункт ${itemIndex}`;
-      }
-      return voteType;
+async function getVoteCounts(proposalId, stage = 1) {
+  try {
+    const votes = await db.getVotes(proposalId, stage);
+    
+    let forCount = 0;
+    let againstCount = 0;
+    let abstainCount = 0;
+    
+    for (const vote of votes) {
+      if (vote.votetype === 'for') forCount++;
+      else if (vote.votetype === 'against') againstCount++;
+      else if (vote.votetype === 'abstain') abstainCount++;
+    }
+    
+    return { forCount, againstCount, abstainCount, totalVoted: forCount + againstCount + abstainCount };
+  } catch (error) {
+    console.error("❌ Error getting vote counts:", error);
+    return { forCount: 0, againstCount: 0, abstainCount: 0, totalVoted: 0 };
   }
 }
 
