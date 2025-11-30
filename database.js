@@ -200,23 +200,19 @@ class CongressDatabase {
       );
     `);
 
-    const chambers = ['sf', 'gd_rublevka', 'gd_arbat', 'gd_patricki', 'gd_tverskoy'];
-    for (const chamber of chambers) {
-      await this.pool.query(
-        `INSERT INTO chamber_counters (chamberId, value) VALUES ($1, 1) ON CONFLICT (chamberId) DO NOTHING;`,
-        [chamber]
-      );
-      
-      let defaultMembers = 56;
-      if (chamber !== 'sf') {
-        defaultMembers = 20;
-      }
-      
-      await this.pool.query(
-        `INSERT INTO chamber_settings (chamberId, totalMembers) VALUES ($1, $2) ON CONFLICT (chamberId) DO UPDATE SET totalMembers = EXCLUDED.totalMembers;`,
-        [chamber, defaultMembers]
-      );
-    }
+const chambers = ['sf', 'gd_rublevka', 'gd_arbat', 'gd_patricki', 'gd_tverskoy'];
+for (const chamber of chambers) {
+  await this.pool.query(
+    `INSERT INTO chamber_counters (chamberId, value) VALUES ($1, 1) ON CONFLICT (chamberId) DO NOTHING;`,
+    [chamber]
+  );
+  
+  // НЕ вставляем настройки по умолчанию, если они уже существуют
+  await this.pool.query(
+    `INSERT INTO chamber_settings (chamberId, totalMembers) VALUES ($1, $2) ON CONFLICT (chamberId) DO NOTHING;`,
+    [chamber, chamber === 'sf' ? 56 : 20]
+  );
+}
 
     await this.createIndexes();
     console.log('✅ All tables created successfully');
