@@ -533,21 +533,48 @@ async function createMeetingWithAgenda(interaction, chamber, title, meetingDate,
 
   await db.createMeeting(meeting);
 
+  // Проверяем существование каждого законопроекта перед добавлением в повестку
+  let addedCount = 0;
   for (const proposalId of selectedProposals) {
-    await db.addToAgenda(id, proposalId);
-    
-    await addProposalEvent(proposalId, {
-      type: 'agenda_inclusion',
-      timestamp: Date.now(),
-      chamber: chamber,
-      description: `Включен в повестку заседания "${title}"`
-    });
+    try {
+      // Проверяем существует ли законопроект
+      const proposalExists = await db.proposalExists(proposalId);
+      if (!proposalExists) {
+        console.warn(`⚠️ Proposal ${proposalId} not found, skipping`);
+        continue;
+      }
+
+      await db.addToAgenda(id, proposalId);
+      addedCount++;
+      
+      await addProposalEvent(proposalId, {
+        type: 'agenda_inclusion',
+        timestamp: Date.now(),
+        chamber: chamber,
+        description: `Включен в повестку заседания "${title}"`
+      });
+    } catch (error) {
+      console.error(`❌ Error adding proposal ${proposalId} to agenda:`, error.message);
+      // Продолжаем с другими законопроектами даже если один не удалось добавить
+    }
+  }
+
+  if (addedCount === 0) {
+    console.warn(`⚠️ No valid proposals were added to meeting ${id}`);
   }
 
   return id;
 }
 
 async function createMeetingFromSelection(interaction, chamber, selectedProposals) {
+  if (!selectedProposals || selectedProposals.length === 0) {
+    await interaction.reply({ 
+      content: "❌ Не выбраны законопроекты для повестки.", 
+      flags: 64 
+    });
+    return;
+  }
+  
   const modal = new ModalBuilder()
     .setCustomId(`meeting_details_${chamber}_${selectedProposals.join('_')}`)
     .setTitle("Создание заседания");
@@ -925,9 +952,23 @@ async function handleMeetingDetailsModal(interaction) {
   await interaction.deferReply({ flags: 64 });
   
   const customId = interaction.customId;
+  // Исправляем получение ID законопроектов - они разделены подчеркиваниями
   const parts = customId.split('_');
   const chamber = parts[2];
-  const proposalIds = parts.slice(3);
+  
+  // Получаем ID законопроектов из оставшихся частей
+  const proposalIds = [];
+  for (let i = 3; i < parts.length; i++) {
+    // Проверяем, что часть не пустая и имеет длину как у nanoid (обычно 8+ символов)
+    if (parts[i] && parts[i].length >= 8) {
+      proposalIds.push(parts[i]);
+    }
+  }
+  
+  if (proposalIds.length === 0) {
+    await interaction.editReply({ content: "❌ Не выбраны законопроекты для повестки." });
+    return;
+  }
   
   const title = interaction.fields.getTextInputValue("meeting_title");
   const meetingDate = interaction.fields.getTextInputValue("meeting_date");
@@ -947,6 +988,8 @@ async function handleMeetingDetailsModal(interaction) {
         const threadLink = `https://discord.com/channels/${GUILD_ID}/${channelId}/${threadId}`;
         agendaText += `• [${proposal.number}](${threadLink}) - ${proposal.name}\n`;
       }
+    } else {
+      agendaText = '*Нет законопроектов в повестке*';
     }
     
     const totalMembers = await getChamberTotalMembers(chamber);
@@ -961,7 +1004,7 @@ async function handleMeetingDetailsModal(interaction) {
         { name: "👥 Общее количество", value: String(totalMembers), inline: true },
         { name: "📊 Требуемый кворум", value: `${quorum} (1/3 от ${totalMembers})`, inline: true },
         { name: "📋 Статус", value: "Запланировано", inline: true },
-        { name: "📜 Повестка", value: agendaText || "*Повестка не сформирована*", inline: false }
+        { name: "📜 Повестка", value: agendaText, inline: false }
       )
       .setColor(COLORS.PRIMARY)
       .setFooter({ text: FOOTER })
