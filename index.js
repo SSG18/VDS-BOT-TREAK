@@ -4816,29 +4816,50 @@ async function finalizeQuantitativeRunoff(proposalId) {
   }
 
   // Добавляем детальную статистику по всем пунктам
+  // Добавляем детальную статистику по обоим пунктам второго тура
   let itemsStats = '';
-  for (const [itemIndex, voteCount] of Object.entries(itemVotes)) {
-    const item = items.find(item => item.itemindex === parseInt(itemIndex));
+  
+  // Получаем оба пункта, которые участвовали во втором туре
+  const runoffItems = items.filter(item => 
+    Object.keys(itemVotes).includes(item.itemindex.toString())
+  );
+  
+  // Сортируем по количеству голосов (от большего к меньшему)
+  runoffItems.sort((a, b) => (itemVotes[b.itemindex] || 0) - (itemVotes[a.itemindex] || 0));
+  
+  for (const item of runoffItems) {
+    const voteCount = itemVotes[item.itemindex] || 0;
     const percentage = totalVoted > 0 ? Math.round((voteCount / totalVoted) * 100) : 0;
-    const isWinner = winner && winner.index === parseInt(itemIndex) && !isTie;
+    const isWinner = winner && winner.index === item.itemindex && !isTie;
     const isTied = isTie && voteCount === maxVotes;
     
     let statusEmoji = '🔘';
     if (isWinner) statusEmoji = '👑';
     else if (isTied) statusEmoji = '⚖️';
     
-    itemsStats += `${statusEmoji} **Пункт ${itemIndex}:** ${voteCount} голосов (${percentage}%)\n`;
+    itemsStats += `${statusEmoji} **Пункт ${item.itemindex}:** ${voteCount} голосов (${percentage}%)\n`;
+    itemsStats += `   ${item.text}\n\n`;
+  }
+  
+  // Если есть пункты без голосов, добавляем их тоже
+  const allRunoffItemIndexes = Object.keys(itemVotes).map(Number);
+  const itemsWithoutVotes = items.filter(item => 
+    !allRunoffItemIndexes.includes(item.itemindex) && 
+    runoffItems.some(ri => ri.itemindex === item.itemindex)
+  );
+  
+  for (const item of itemsWithoutVotes) {
+    itemsStats += `🔘 **Пункт ${item.itemindex}:** 0 голосов (0%)\n`;
     itemsStats += `   ${item.text}\n\n`;
   }
   
   if (itemsStats) {
     embed.addFields({
-      name: "📋 Детальная статистика по пунктам",
+      name: "📋 Детальная статистика по пунктам второго тура",
       value: itemsStats,
       inline: false
     });
   }
-
   // Добавляем поимённое голосование если не тайное
   if (!voting.isSecret) {
     embed.addFields({ 
