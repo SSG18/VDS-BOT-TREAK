@@ -306,19 +306,54 @@ function getEventTitle(event) {
 function getAvailableChambers(member) {
   const available = [];
   
-  const chamberRoles = {
-    'sf': [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE],
-    'gd_rublevka': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.RUBLEVKA],
-    'gd_arbat': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.ARBAT],
-    'gd_patricki': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.PATRICKI],
-    'gd_tverskoy': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.TVERSKOY]
-  };
+  // Проверяем роли для Совета Федерации
+  const senatorRoles = [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE];
+  const hasSenatorRole = senatorRoles.some(roleId => member.roles.cache.has(roleId));
   
-  for (const [chamber, requiredRoles] of Object.entries(chamberRoles)) {
-    if (requiredRoles.some(roleId => member.roles.cache.has(roleId))) {
+  if (hasSenatorRole) {
+    available.push({
+      value: 'sf',
+      label: CHAMBER_NAMES['sf']
+    });
+  }
+  
+  // Проверяем роли для каждой Государственной Думы
+  const gdChambers = [
+    { 
+      value: 'gd_rublevka', 
+      label: CHAMBER_NAMES['gd_rublevka'],
+      generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE],
+      regionalRole: ROLES.RUBLEVKA
+    },
+    { 
+      value: 'gd_arbat', 
+      label: CHAMBER_NAMES['gd_arbat'],
+      generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE],
+      regionalRole: ROLES.ARBAT
+    },
+    { 
+      value: 'gd_patricki', 
+      label: CHAMBER_NAMES['gd_patricki'],
+      generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE],
+      regionalRole: ROLES.PATRICKI
+    },
+    { 
+      value: 'gd_tverskoy', 
+      label: CHAMBER_NAMES['gd_tverskoy'],
+      generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE],
+      regionalRole: ROLES.TVERSKOY
+    }
+  ];
+  
+  for (const chamber of gdChambers) {
+    // Проверяем, что пользователь имеет общую роль депутата И региональную роль
+    const hasGeneralRole = chamber.generalRoles.some(roleId => member.roles.cache.has(roleId));
+    const hasRegionalRole = member.roles.cache.has(chamber.regionalRole);
+    
+    if (hasGeneralRole && hasRegionalRole) {
       available.push({
-        value: chamber,
-        label: CHAMBER_NAMES[chamber]
+        value: chamber.value,
+        label: chamber.label
       });
     }
   }
@@ -338,16 +373,29 @@ async function canUserVote(proposal, userId, voting, meetingId = null) {
       meeting = await db.getLastMeetingByChamber(proposal.chamber);
     }
     
-    const chamberRoles = {
-      'sf': [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE],
-      'gd_rublevka': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.RUBLEVKA],
-      'gd_arbat': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.ARBAT],
-      'gd_patricki': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.PATRICKI],
-      'gd_tverskoy': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.TVERSKOY]
-    };
+    // Проверяем роли в зависимости от палаты
+    let hasChamberRole = false;
     
-    const userChamberRoles = chamberRoles[proposal.chamber] || [];
-    const hasChamberRole = userChamberRoles.some(roleId => member.roles.cache.has(roleId));
+    if (proposal.chamber === 'sf') {
+      // Для Совета Федерации проверяем сенаторские роли
+      const senatorRoles = [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE];
+      hasChamberRole = senatorRoles.some(roleId => member.roles.cache.has(roleId));
+    } else {
+      // Для Государственной Думы проверяем депутатские и региональные роли
+      const chamberConfig = {
+        'gd_rublevka': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.RUBLEVKA },
+        'gd_arbat': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.ARBAT },
+        'gd_patricki': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.PATRICKI },
+        'gd_tverskoy': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.TVERSKOY }
+      };
+      
+      const config = chamberConfig[proposal.chamber];
+      if (config) {
+        const hasGeneralRole = config.generalRoles.some(roleId => member.roles.cache.has(roleId));
+        const hasRegionalRole = member.roles.cache.has(config.regionalRole);
+        hasChamberRole = hasGeneralRole && hasRegionalRole;
+      }
+    }
     
     if (!hasChamberRole) {
       return { canVote: false, reason: "❌ Вы не принадлежите к этой палате." };
@@ -358,7 +406,7 @@ async function canUserVote(proposal, userId, voting, meetingId = null) {
       return { canVote: false, reason: "❌ Вы не зарегистрированы для голосования по этому законопроекту." };
     }
     
-    return { canVote: true, meetingId: meeting.id };
+    return { canVote: true, meetingId: meeting?.id };
   } catch (error) {
     console.error("❌ Error checking voting permission:", error);
     return { canVote: false, reason: "❌ Ошибка проверки прав голосования." };
@@ -952,23 +1000,9 @@ async function handleMeetingDetailsModal(interaction) {
   await interaction.deferReply({ flags: 64 });
   
   const customId = interaction.customId;
-  // Исправляем получение ID законопроектов - они разделены подчеркиваниями
   const parts = customId.split('_');
   const chamber = parts[2];
-  
-  // Получаем ID законопроектов из оставшихся частей
-  const proposalIds = [];
-  for (let i = 3; i < parts.length; i++) {
-    // Проверяем, что часть не пустая и имеет длину как у nanoid (обычно 8+ символов)
-    if (parts[i] && parts[i].length >= 8) {
-      proposalIds.push(parts[i]);
-    }
-  }
-  
-  if (proposalIds.length === 0) {
-    await interaction.editReply({ content: "❌ Не выбраны законопроекты для повестки." });
-    return;
-  }
+  const proposalIds = parts.slice(3);
   
   const title = interaction.fields.getTextInputValue("meeting_title");
   const meetingDate = interaction.fields.getTextInputValue("meeting_date");
@@ -983,17 +1017,16 @@ async function handleMeetingDetailsModal(interaction) {
     if (agenda.length > 0) {
       agendaText = '**📋 Повестка дня:**\n';
       for (const proposal of agenda) {
-        const threadId = proposal.threadid;
-        const channelId = proposal.channelid;
-        const threadLink = `https://discord.com/channels/${GUILD_ID}/${channelId}/${threadId}`;
+        // Используем прямую ссылку на ветку
+        const threadLink = `https://discord.com/channels/${GUILD_ID}/${proposal.threadid}`;
         agendaText += `• [${proposal.number}](${threadLink}) - ${proposal.name}\n`;
       }
     } else {
-      agendaText = '*Нет законопроектов в повестке*';
+      agendaText = '*Повестка не сформирована*';
     }
     
     const totalMembers = await getChamberTotalMembers(chamber);
-    const quorum = Math.ceil(totalMembers / 3); // 1/3 от общего числа
+    const quorum = Math.ceil(totalMembers / 3);
     
     const embed = new EmbedBuilder()
       .setTitle(`📅 Заседание: ${title}`)
@@ -1239,6 +1272,15 @@ async function handleButton(interaction) {
       await handleGetCardButton(interaction);
       return;
     }
+    if (cid.startsWith("delayed_approve_")) {
+    await handleDelayedApprove(interaction);
+    return;
+    }
+
+    if (cid.startsWith("delayed_deny_")) {
+    await handleDelayedDeny(interaction);
+    return;
+    }
 
     if (cid.startsWith("clear_roles_")) {
       await handleClearRolesButton(interaction);
@@ -1345,16 +1387,29 @@ async function handleGetCardButton(interaction) {
     const member = interaction.member;
     const chamber = meeting.chamber;
     
-    const chamberRoles = {
-      'sf': [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE],
-      'gd_rublevka': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.RUBLEVKA],
-      'gd_arbat': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.ARBAT],
-      'gd_patricki': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.PATRICKI],
-      'gd_tverskoy': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.TVERSKOY]
-    };
+    // Проверяем роли в зависимости от палаты
+    let hasChamberRole = false;
     
-    const userChamberRoles = chamberRoles[chamber] || [];
-    const hasChamberRole = userChamberRoles.some(roleId => member.roles.cache.has(roleId));
+    if (chamber === 'sf') {
+      // Для Совета Федерации проверяем сенаторские роли
+      const senatorRoles = [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE];
+      hasChamberRole = senatorRoles.some(roleId => member.roles.cache.has(roleId));
+    } else {
+      // Для Государственной Думы проверяем депутатские и региональные роли
+      const chamberConfig = {
+        'gd_rublevka': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.RUBLEVKA },
+        'gd_arbat': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.ARBAT },
+        'gd_patricki': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.PATRICKI },
+        'gd_tverskoy': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.TVERSKOY }
+      };
+      
+      const config = chamberConfig[chamber];
+      if (config) {
+        const hasGeneralRole = config.generalRoles.some(roleId => member.roles.cache.has(roleId));
+        const hasRegionalRole = member.roles.cache.has(config.regionalRole);
+        hasChamberRole = hasGeneralRole && hasRegionalRole;
+      }
+    }
     
     if (!hasChamberRole) {
       await interaction.reply({ content: `❌ Вы не принадлежите к палате "${CHAMBER_NAMES[chamber]}".`, flags: 64 });
@@ -1704,11 +1759,10 @@ async function getRegistrationList(meetingId) {
   
   for (const reg of registrations) {
     try {
-      const user = await client.users.fetch(reg.userid);
-      // ИСПОЛЬЗУЕМ КЛИКАБЕЛЬНЫЕ ТЕГИ ДИСКОРДА
-      listText += `• <@${reg.userid}> (${user.username})\n`;
+      // Используем только упоминание пользователя, без username
+      listText += `• <@${reg.userid}>\n`;
     } catch (error) {
-      // ЕСЛИ НЕ УДАЛОСЬ ПОЛУЧИТЬ ДАННЫЕ ПОЛЬЗОВАТЕЛЯ, ИСПОЛЬЗУЕМ ТОЛЬКО ТЕГ
+      // Если не удалось получить данные пользователя, используем только тег
       listText += `• <@${reg.userid}>\n`;
     }
   }
@@ -1826,18 +1880,13 @@ async function finalizeProposalRegistration(proposalId, messageId) {
     const registrations = await db.getProposalRegistrations(proposalId);
     const registrationCount = registrations.length;
     
-    // Получаем кворум для палаты (1/3 от общего количества)
     const quorum = await getChamberQuorum(proposal.chamber);
     const isQuorumMet = registrationCount >= quorum;
     
     let registrationList = '';
     for (const reg of registrations) {
-      try {
-        const user = await client.users.fetch(reg.userid);
-        registrationList += `• <@${reg.userid}> (${user.username})\n`;
-      } catch (error) {
-        registrationList += `• <@${reg.userid}>\n`;
-      }
+      // Используем только упоминание пользователя
+      registrationList += `• <@${reg.userid}>\n`;
     }
     
     const embed = new EmbedBuilder()
@@ -1857,7 +1906,6 @@ async function finalizeProposalRegistration(proposalId, messageId) {
     let components = [];
 
     if (isQuorumMet) {
-      // Если кворум собран, показываем кнопки для начала голосования и отсроченной регистрации
       const buttonsRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`start_voting_${proposalId}`)
@@ -1870,7 +1918,6 @@ async function finalizeProposalRegistration(proposalId, messageId) {
       );
       components = [buttonsRow];
     } else {
-      // Если кворум не собран, показываем кнопку перезапуска регистрации
       const buttonsRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`restart_registration_${proposalId}`)
@@ -1993,18 +2040,29 @@ async function handleRegisterProposalButton(interaction) {
     const member = interaction.member;
     const chamber = proposal.chamber;
     
-
+    // Проверяем роли в зависимости от палаты
+    let hasChamberRole = false;
     
-    const chamberRoles = {
-      'sf': [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE],
-      'gd_rublevka': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.RUBLEVKA],
-      'gd_arbat': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.ARBAT],
-      'gd_patricki': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.PATRICKI],
-      'gd_tverskoy': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.TVERSKOY]
-    };
-    
-    const userChamberRoles = chamberRoles[chamber] || [];
-    const hasChamberRole = userChamberRoles.some(roleId => member.roles.cache.has(roleId));
+    if (chamber === 'sf') {
+      // Для Совета Федерации проверяем сенаторские роли
+      const senatorRoles = [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE];
+      hasChamberRole = senatorRoles.some(roleId => member.roles.cache.has(roleId));
+    } else {
+      // Для Государственной Думы проверяем депутатские и региональные роли
+      const chamberConfig = {
+        'gd_rublevka': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.RUBLEVKA },
+        'gd_arbat': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.ARBAT },
+        'gd_patricki': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.PATRICKI },
+        'gd_tverskoy': { generalRoles: [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE], regionalRole: ROLES.TVERSKOY }
+      };
+      
+      const config = chamberConfig[chamber];
+      if (config) {
+        const hasGeneralRole = config.generalRoles.some(roleId => member.roles.cache.has(roleId));
+        const hasRegionalRole = member.roles.cache.has(config.regionalRole);
+        hasChamberRole = hasGeneralRole && hasRegionalRole;
+      }
+    }
     
     if (!hasChamberRole) {
       await interaction.reply({ content: `❌ Вы не принадлежите к палате "${CHAMBER_NAMES[chamber]}".`, flags: 64 });
@@ -2916,6 +2974,173 @@ async function handleEndVoteButton(interaction) {
   await interaction.editReply({ content: "⏹️ Голосование завершено.", flags: 64 });
 }
 
+async function handleDelayedApprove(interaction) {
+  await interaction.deferReply({ flags: 64 });
+  
+  const parts = interaction.customId.split('_');
+  const proposalId = parts[2];
+  const userId = parts[3];
+  
+  const proposal = await db.getProposal(proposalId);
+  if (!proposal) {
+    await interaction.editReply({ content: "❌ Законопроект не найден." });
+    return;
+  }
+  
+  const member = interaction.member;
+  if (!isChamberChairman(member, proposal.chamber) && !isAdmin(member)) {
+    await interaction.editReply({ content: "❌ У вас нет прав для регистрации пользователей." });
+    return;
+  }
+  
+  try {
+    // Регистрируем пользователя
+    await db.registerForProposalVoting(proposalId, userId);
+    
+    const user = await client.users.fetch(userId);
+    
+    // Обновляем исходное сообщение
+    const embed = new EmbedBuilder()
+      .setTitle(`✅ Регистрация одобрена — ${proposal.number}`)
+      .setDescription(`Пользователь <@${userId}> зарегистрирован для голосования вне срока.`)
+      .addFields(
+        { name: "📝 Законопроект", value: proposal.name, inline: false },
+        { name: "🏛️ Палата", value: CHAMBER_NAMES[proposal.chamber], inline: true },
+        { name: "👤 Пользователь", value: `<@${userId}>`, inline: true },
+        { name: "🕐 Время запроса", value: formatMoscowTime(Date.now()), inline: true },
+        { name: "👨‍💼 Одобрил", value: `<@${interaction.user.id}>`, inline: true }
+      )
+      .setColor(COLORS.SUCCESS)
+      .setFooter({ text: FOOTER })
+      .setTimestamp();
+    
+    await interaction.message.edit({ 
+      embeds: [embed], 
+      components: [] 
+    });
+    
+    // Обновляем список регистраций в ветке законопроекта
+    await updateRegistrationList(proposalId, userId, interaction.user.id);
+    
+    await interaction.editReply({ content: `✅ Пользователь <@${userId}> зарегистрирован.` });
+    
+  } catch (error) {
+    console.error("❌ Error approving delayed registration:", error);
+    await interaction.editReply({ content: "❌ Ошибка при регистрации пользователя." });
+  }
+}
+
+async function handleDelayedDeny(interaction) {
+  await interaction.deferReply({ flags: 64 });
+  
+  const parts = interaction.customId.split('_');
+  const proposalId = parts[2];
+  const userId = parts[3];
+  
+  const proposal = await db.getProposal(proposalId);
+  if (!proposal) {
+    await interaction.editReply({ content: "❌ Законопроект не найден." });
+    return;
+  }
+  
+  const member = interaction.member;
+  if (!isChamberChairman(member, proposal.chamber) && !isAdmin(member)) {
+    await interaction.editReply({ content: "❌ У вас нет прав для отклонения регистрации." });
+    return;
+  }
+  
+  try {
+    const user = await client.users.fetch(userId);
+    
+    // Обновляем исходное сообщение
+    const embed = new EmbedBuilder()
+      .setTitle(`❌ Регистрация отклонена — ${proposal.number}`)
+      .setDescription(`Запрос на регистрацию пользователя <@${userId}> отклонен.`)
+      .addFields(
+        { name: "📝 Законопроект", value: proposal.name, inline: false },
+        { name: "🏛️ Палата", value: CHAMBER_NAMES[proposal.chamber], inline: true },
+        { name: "👤 Пользователь", value: `<@${userId}>`, inline: true },
+        { name: "🕐 Время запроса", value: formatMoscowTime(Date.now()), inline: true },
+        { name: "👨‍💼 Отклонил", value: `<@${interaction.user.id}>`, inline: true }
+      )
+      .setColor(COLORS.DANGER)
+      .setFooter({ text: FOOTER })
+      .setTimestamp();
+    
+    await interaction.message.edit({ 
+      embeds: [embed], 
+      components: [] 
+    });
+    
+    await interaction.editReply({ content: `✅ Регистрация пользователя <@${userId}> отклонена.` });
+    
+  } catch (error) {
+    console.error("❌ Error denying delayed registration:", error);
+    await interaction.editReply({ content: "❌ Ошибка при отклонении регистрации." });
+  }
+}
+
+async function updateRegistrationList(proposalId, registeredUserId, approvedById) {
+  try {
+    const proposal = await db.getProposal(proposalId);
+    if (!proposal || !proposal.threadid) return;
+
+    const thread = await client.channels.fetch(proposal.threadid);
+    const registrationMessages = await thread.messages.fetch({ limit: 50 });
+    
+    for (const [msgId, message] of registrationMessages) {
+      if (message.embeds.length > 0 && message.embeds[0].title && 
+          message.embeds[0].title.includes('Результаты регистрации')) {
+        
+        const currentEmbed = message.embeds[0];
+        const currentDescription = currentEmbed.description || '';
+        const currentFields = currentEmbed.fields || [];
+        
+        // Находим поле со списком зарегистрированных
+        const registrationField = currentFields.find(field => field.name === '📝 Список зарегистрированных');
+        if (!registrationField) continue;
+        
+        let registrationList = registrationField.value;
+        
+        // Добавляем нового пользователя с пометкой о регистрации вне срока
+        const newUserEntry = `• <@${registeredUserId}> (зарегистрирован вне срока <@${approvedById}> ${formatMoscowTime(Date.now())})`;
+        
+        if (registrationList === "Никто не зарегистрирован") {
+          registrationList = newUserEntry;
+        } else {
+          registrationList += `\n${newUserEntry}`;
+        }
+        
+        // Обновляем embed
+        const newEmbed = new EmbedBuilder()
+          .setTitle(currentEmbed.title)
+          .setDescription(currentDescription)
+          .setColor(currentEmbed.color)
+          .setFooter({ text: FOOTER })
+          .setTimestamp();
+        
+        // Копируем все поля, заменяя только список зарегистрированных
+        for (const field of currentFields) {
+          if (field.name === '📝 Список зарегистрированных') {
+            newEmbed.addFields({ 
+              name: field.name, 
+              value: registrationList, 
+              inline: field.inline 
+            });
+          } else {
+            newEmbed.addFields(field);
+          }
+        }
+        
+        await message.edit({ embeds: [newEmbed] });
+        break;
+      }
+    }
+  } catch (error) {
+    console.error("❌ Error updating registration list:", error);
+  }
+}
+
 async function handleDelayedRegistrationButton(interaction) {
   const proposalId = interaction.customId.split("delayed_registration_")[1];
   const proposal = await db.getProposal(proposalId);
@@ -2925,102 +3150,47 @@ async function handleDelayedRegistrationButton(interaction) {
     return;
   }
   
-  const member = interaction.member;
-  if (!isChamberChairman(member, proposal.chamber) && !isAdmin(member)) {
-    await interaction.reply({ content: "❌ У вас нет прав для регистрации вне срока.", flags: 64 });
-    return;
-  }
-  
   try {
     const channel = await client.channels.fetch(DELAYED_REGISTRATION_CHANNEL_ID);
     
-    // Получаем всех пользователей гильдии
-    const guild = await client.guilds.fetch(GUILD_ID);
-    const allMembers = await guild.members.fetch();
-    
-    // Определяем роли для палаты
-    const chamberRoles = {
-      'sf': [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE],
-      'gd_rublevka': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.RUBLEVKA],
-      'gd_arbat': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.ARBAT],
-      'gd_patricki': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.PATRICKI],
-      'gd_tverskoy': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.TVERSKOY]
-    };
-    
-    const requiredRoles = chamberRoles[proposal.chamber] || [];
-    
-    // Фильтруем пользователей, которые принадлежат к палате и еще не зарегистрированы
-    const proposalRegistrations = await db.getProposalRegistrations(proposalId);
-    const registeredUserIds = proposalRegistrations.map(r => r.userid);
-    
-    const availableUsers = [];
-    
-    for (const [memberId, guildMember] of allMembers) {
-      // Проверяем, что пользователь имеет хотя бы одну из требуемых ролей
-      const hasRequiredRole = requiredRoles.some(roleId => guildMember.roles.cache.has(roleId));
-      
-      if (hasRequiredRole && !registeredUserIds.includes(memberId)) {
-        availableUsers.push({
-          userId: memberId,
-          username: guildMember.user.username,
-          displayName: guildMember.displayName
-        });
-      }
-    }
-    
-    if (availableUsers.length === 0) {
-      await interaction.reply({ 
-        content: "❌ Нет доступных пользователей для регистрации вне срока.", 
-        flags: 64 
-      });
-      return;
-    }
-    
     const embed = new EmbedBuilder()
-      .setTitle(`⏰ Отсроченная регистрация — ${proposal.number}`)
-      .setDescription(`Требуется регистрация пользователя для голосования по законопроекту вне установленного срока.`)
+      .setTitle(`⏰ Запрос регистрации вне срока — ${proposal.number}`)
+      .setDescription(`Пользователь <@${interaction.user.id}> запросил регистрацию для голосования вне установленного срока.`)
       .addFields(
-        { name: "📝 Наименование", value: proposal.name, inline: false },
+        { name: "📝 Законопроект", value: proposal.name, inline: false },
         { name: "🏛️ Палата", value: CHAMBER_NAMES[proposal.chamber], inline: true },
-        { name: "👤 Запросил", value: `<@${interaction.user.id}>`, inline: true },
-        { name: "👥 Доступно пользователей", value: String(availableUsers.length), inline: true }
+        { name: "👤 Пользователь", value: `<@${interaction.user.id}>`, inline: true },
+        { name: "🕐 Время запроса", value: formatMoscowTime(Date.now()), inline: true }
       )
       .setColor(COLORS.WARNING)
       .setFooter({ text: FOOTER })
       .setTimestamp();
     
-    const selectMenu = new StringSelectMenuBuilder()
-      .setCustomId(`delayed_register_select_${proposalId}`)
-      .setPlaceholder('Выберите пользователя для регистрации')
-      .setMinValues(1)
-      .setMaxValues(1);
-    
-    // Добавляем пользователей в выпадающий список (максимум 25)
-    for (const user of availableUsers.slice(0, 25)) {
-      selectMenu.addOptions(
-        new StringSelectMenuOptionBuilder()
-          .setLabel(user.displayName || user.username)
-          .setValue(user.userId)
-          .setDescription(`Зарегистрировать для голосования`)
-      );
-    }
-    
-    const row = new ActionRowBuilder().addComponents(selectMenu);
+    const buttons = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`delayed_approve_${proposalId}_${interaction.user.id}`)
+        .setLabel("✅ Зарегистрировать")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`delayed_deny_${proposalId}_${interaction.user.id}`)
+        .setLabel("❌ Не регистрировать")
+        .setStyle(ButtonStyle.Danger)
+    );
     
     await channel.send({ 
-      content: `<@&${ROLES.CHAIRMAN}>`, 
+      content: `<@&${ROLES.CHAIRMAN}> <@&${SYSADMIN_ROLE_ID}>`, 
       embeds: [embed], 
-      components: [row] 
+      components: [buttons] 
     });
     
     await interaction.reply({ 
-      content: `✅ Запрос на отсроченную регистрацию отправлен в канал <#${DELAYED_REGISTRATION_CHANNEL_ID}>`, 
+      content: `✅ Ваш запрос на регистрацию отправлен председателям. Ожидайте решения.`, 
       flags: 64 
     });
     
   } catch (error) {
     console.error("❌ Error in delayed registration button:", error);
-    await interaction.reply({ content: "❌ Ошибка при запросе отсроченной регистрации.", flags: 64 });
+    await interaction.reply({ content: "❌ Ошибка при запросе регистрации.", flags: 64 });
   }
 }
 
