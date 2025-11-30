@@ -1379,7 +1379,7 @@ async function handleGetCardButton(interaction) {
   const meeting = await db.getMeeting(meetingId);
   
   if (!meeting || !meeting.open) {
-    await interaction.reply({ content: "❌ Регистрация закрыта.", flags: 64 });
+    await interaction.reply({ content: "❌ Фиксация присутствующих завершена.", flags: 64 });
     return;
   }
   
@@ -1425,10 +1425,10 @@ async function handleGetCardButton(interaction) {
       }
     }
     
-    await interaction.reply({ content: "✅ Вы успешно зарегистрированы на заседание!", flags: 64 });
+    await interaction.reply({ content: "✅ Ваше присутствие зафиксировано!", flags: 64 });
   } catch (error) {
     console.error("❌ Error in get card button:", error);
-    await interaction.reply({ content: "❌ Ошибка при регистрации.", flags: 64 });
+    await interaction.reply({ content: "❌ Ошибка при фиксации присутствия.", flags: 64 });
   }
 }
 
@@ -1615,18 +1615,18 @@ async function handleStartMeetingModal(interaction) {
     
     const regBtn = new ButtonBuilder()
       .setCustomId(`get_card_${meetingId}`)
-      .setLabel("🎫 Зарегистрироваться на заседание")
+      .setLabel("✅ Отметить присутствие")
       .setStyle(ButtonStyle.Primary);
     const row = new ActionRowBuilder().addComponents(regBtn);
     
     const embed = new EmbedBuilder()
-      .setTitle(`🔔 Открыта регистрация на заседание`)
+      .setTitle(`🔔 Начата фиксация присутствующих на заседании`)
       .setDescription(`**${meeting.title}**`)
       .addFields(
-        { name: "⏱️ Время регистрации", value: formatTimeLeft(ms), inline: true },
+        { name: "⏱️ Время фиксации", value: formatTimeLeft(ms), inline: true },
         { name: "📊 Требуемый кворум", value: `${quorum} (1/3 от ${totalMembers})`, inline: true },
         { name: "👥 Общее количество", value: String(totalMembers), inline: true },
-        { name: "🕐 Начало регистрации", value: formatMoscowTime(Date.now()), inline: true }
+        { name: "🕐 Начало фиксации", value: formatMoscowTime(Date.now()), inline: true }
       )
       .setColor(COLORS.PRIMARY)
       .setFooter({ text: FOOTER })
@@ -1634,7 +1634,7 @@ async function handleStartMeetingModal(interaction) {
       
     await msg.edit({ embeds: [embed], components: [row] });
     await startMeetingTicker(meetingId);
-    await interaction.editReply({ content: "✅ Регистрация на заседание начата." });
+    await interaction.editReply({ content: "✅ Фиксация присутствующих начата." });
   } catch (e) {
     console.error("❌ Error starting meeting:", e);
     await interaction.editReply({ content: "❌ Ошибка при запуске заседания." });
@@ -1666,22 +1666,22 @@ async function startMeetingTicker(meetingId) {
         const listText = await getRegistrationList(meetingId);
         const registeredCount = await db.getRegistrationCount(meetingId);
         const quorum = meeting.quorum || 1;
-        const totalMembers = meeting.totalmembers || (meeting.chamber === 'sf' ? 56 : 20);
+        const totalMembers = meeting.totalmembers || await getChamberTotalMembers(meeting.chamber);
         
         const isQuorumMet = registeredCount >= quorum;
         const quorumStatus = isQuorumMet ? "✅ Кворум собран" : "❌ Кворум не собран";
         
         const finalEmbed = new EmbedBuilder()
-          .setTitle(`📋 Регистрация завершена`)
+          .setTitle(`📋 Фиксация присутствующих завершена`)
           .setDescription(`**${meeting.title}**`)
           .addFields(
-            { name: "👥 Количество зарегистрированных", value: String(registeredCount), inline: true },
+            { name: "👥 Количество присутствующих", value: String(registeredCount), inline: true },
             { name: "📊 Требуемый кворум", value: String(quorum), inline: true },
             { name: "📈 Статус кворума", value: quorumStatus, inline: true },
             { name: "👥 Общее количество членов", value: String(totalMembers), inline: true },
-            { name: "⏱️ Время регистрации", value: formatTimeLeft(meeting.durationms), inline: true },
-            { name: "🕐 Начало регистрации", value: formatMoscowTime(Number(meeting.createdat)), inline: false },
-            { name: "📝 Список зарегистрированных", value: listText, inline: false }
+            { name: "⏱️ Время фиксации", value: formatTimeLeft(meeting.durationms), inline: true },
+            { name: "🕐 Начало фиксации", value: formatMoscowTime(Number(meeting.createdat)), inline: false },
+            { name: "📝 Список присутствующих", value: listText, inline: false }
           )
           .setColor(isQuorumMet ? COLORS.SUCCESS : COLORS.DANGER)
           .setFooter({ text: FOOTER })
@@ -1710,9 +1710,9 @@ async function startMeetingTicker(meetingId) {
         await db.updateMeetingThread(meetingId, thread.id);
         
         if (isQuorumMet) {
-          await thread.send(`✅ **Кворум собран!** Зарегистрировано ${registeredCount} из ${quorum} необходимых участников.`);
+          await thread.send(`✅ **Кворум собран!** Присутствует ${registeredCount} из ${quorum} необходимых участников.`);
         } else {
-          await thread.send(`❌ **Кворум не собран!** Зарегистрировано ${registeredCount} из ${quorum} необходимых участников.`);
+          await thread.send(`❌ **Кворум не собран!** Присутствует ${registeredCount} из ${quorum} необходимых участников.`);
         }
         
         clearInterval(meetingTimers.get(meetingId));
@@ -1724,11 +1724,11 @@ async function startMeetingTicker(meetingId) {
         const quorum = meeting.quorum || 1;
         
         const embed = new EmbedBuilder()
-          .setTitle(`🔔 Открыта регистрация на заседание`)
+          .setTitle(`🔔 Идет фиксация присутствующих на заседании`)
           .setDescription(`**${meeting.title}**`)
           .addFields(
-            { name: "⏳ Время до конца регистрации", value: leftStr, inline: true },
-            { name: "👥 Зарегистрировано", value: `${registeredCount}/${quorum}`, inline: true },
+            { name: "⏳ Время до конца фиксации", value: leftStr, inline: true },
+            { name: "👥 Присутствует", value: `${registeredCount}/${quorum}`, inline: true },
             { name: "📊 Статус кворума", value: registeredCount >= quorum ? "✅ Собран" : "❌ Не собран", inline: true }
           )
           .setColor(registeredCount >= quorum ? COLORS.SUCCESS : COLORS.WARNING)
@@ -2994,6 +2994,13 @@ async function handleDelayedApprove(interaction) {
   }
   
   try {
+    // ПРОВЕРЯЕМ, не зарегистрирован ли пользователь уже
+    const isAlreadyRegistered = await db.isUserRegisteredForProposal(proposalId, userId);
+    if (isAlreadyRegistered) {
+      await interaction.editReply({ content: "❌ Этот пользователь уже зарегистрирован для голосования." });
+      return;
+    }
+    
     // Регистрируем пользователя
     await db.registerForProposalVoting(proposalId, userId);
     
