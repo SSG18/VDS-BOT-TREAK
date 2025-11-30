@@ -1745,21 +1745,21 @@ async function startQuantitativeRunoff(proposalId, winningItems) {
 }
 
 async function handleStartQuantitativeRunoffButton(interaction) {
+  await interaction.deferReply({ flags: 64 });
+  
   const proposalId = interaction.customId.split("start_quantitative_runoff_")[1];
   const proposal = await db.getProposal(proposalId);
   
   if (!proposal) {
-    await interaction.reply({ content: "❌ Законопроект не найден.", flags: 64 });
+    await interaction.editReply({ content: "❌ Законопроект не найден." });
     return;
   }
   
   const member = interaction.member;
   if (!isChamberChairman(member, proposal.chamber) && !isAdmin(member)) {
-    await interaction.reply({ content: "❌ У вас нет прав для запуска второго тура.", flags: 64 });
+    await interaction.editReply({ content: "❌ У вас нет прав для запуска второго тура." });
     return;
   }
-  
-  await interaction.deferReply({ flags: 64 });
   
   try {
     // Получаем результаты первого тура для определения пунктов для второго тура
@@ -4612,89 +4612,6 @@ async function finalizeQuantitativeVote(proposalId) {
     
   } catch (e) {
     console.error("❌ Error publishing quantitative vote results:", e);
-  }
-}
-
-async function startQuantitativeRunoff(proposalId, winningItems) {
-  const proposal = await db.getProposal(proposalId);
-  if (!proposal) return;
-
-  const voting = {
-    proposalId: proposalId,
-    open: true,
-    startedAt: Date.now(),
-    durationMs: 300000,
-    expiresAt: Date.now() + 300000,
-    messageId: null,
-    isSecret: false,
-    formula: '0',
-    stage: 2
-  };
-
-  await db.startVoting(voting);
-
-  try {
-    const thread = await client.channels.fetch(proposal.threadid);
-    
-    const embed = new EmbedBuilder()
-      .setTitle(`🗳️ Второй тур рейтингового голосования — ${proposal.number}`)
-      .setDescription(`Несколько пунктов набрали большинство голосов. Во втором туре выберите ОДИН наиболее предпочтительный пункт.`)
-      .setColor(COLORS.INFO)
-      .setTimestamp();
-    
-    if (FOOTER) {
-      embed.setFooter({ text: FOOTER });
-    }
-
-    const voteRows = [];
-    let currentRow = new ActionRowBuilder();
-    
-    winningItems.forEach((item, index) => {
-      if (currentRow.components.length >= 3) {
-        voteRows.push(currentRow);
-        currentRow = new ActionRowBuilder();
-      }
-      currentRow.addComponents(
-        new ButtonBuilder()
-          .setCustomId(`vote_item_${item.index}_${proposalId}`)
-          .setLabel(`Пункт ${item.index}`)
-          .setStyle(ButtonStyle.Primary)
-      );
-    });
-    
-    if (currentRow.components.length >= 3) {
-      voteRows.push(currentRow);
-      currentRow = new ActionRowBuilder();
-    }
-    currentRow.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`vote_abstain_${proposalId}`)
-        .setLabel("⚪ Воздержаться")
-        .setStyle(ButtonStyle.Secondary)
-    );
-    
-    if (currentRow.components.length > 0) {
-      voteRows.push(currentRow);
-    }
-    
-    const controlRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`end_vote_${proposalId}`).setLabel("⏹️ Завершить голосование").setStyle(ButtonStyle.Danger)
-    );
-    
-    voteRows.push(controlRow);
-
-    const runoffMsg = await thread.send({ 
-      embeds: [embed], 
-      components: voteRows 
-    });
-
-    voting.runoffMessageId = runoffMsg.id;
-    await db.startVoting(voting);
-
-    await startVoteTicker(proposalId);
-    
-  } catch (e) {
-    console.error("❌ Error starting quantitative runoff:", e);
   }
 }
 
