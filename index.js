@@ -155,7 +155,22 @@ const rest = new REST({ version: "10" }).setToken(TOKEN);
 function isAdmin(member) {
   return member.roles.cache.has(ADMIN_ROLE_SEND_ID) || member.roles.cache.has(SYSADMIN_ROLE_ID);
 }
-
+function getVoteTypeText(voteType) {
+  if (!voteType) return 'Неизвестно';
+  
+  switch(voteType) {
+    case 'for': return '✅ ЗА';
+    case 'against': return '❌ ПРОТИВ';
+    case 'abstain': return '⚪ ВОЗДЕРЖАЛСЯ';
+    default:
+      // Для количественного голосования
+      if (voteType.startsWith('item_')) {
+        const itemIndex = voteType.split('_')[1];
+        return `📊 Пункт ${itemIndex}`;
+      }
+      return voteType;
+  }
+}
 function isChamberChairman(member, chamber) {
   const requiredRoles = CHAMBER_CHAIRMAN_ROLES[chamber];
   if (!requiredRoles) return false;
@@ -437,9 +452,6 @@ async function getChamberTotalMembers(chamber) {
 const commands = [
   new SlashCommandBuilder().setName("help").setDescription("Показать справку по использованию бота"),
   new SlashCommandBuilder().setName("send").setDescription("Открыть форму регистрации законопроекта"),
-  new SlashCommandBuilder()
-  .setName("info")
-  .setDescription("Получить информацию по голосованию (только для администрации)"),
   new SlashCommandBuilder()
     .setName("create_meeting")
     .setDescription("Создать заседание (только для председателей)"),
@@ -832,8 +844,6 @@ async function handleSlashCommand(interaction) {
     await resetMeetingRoles(interaction);
   } else if (cmd === "set") {
     await setChamberMembers(interaction);
-  } else if (cmd === "info") {
-  await handleInfoCommand(interaction);
 }
 }
 
@@ -2502,6 +2512,13 @@ async function handleRegularVoteButtons(interaction) {
     const proposal = await db.getProposal(proposalId);
     if (!proposal) {
       await interaction.editReply({ content: "❌ Законопроект не найден." });
+      return;
+    }
+    
+    // ПРОВЕРКА РЕГИСТРАЦИИ ПЕРЕД ГОЛОСОВАНИЕМ
+    const isRegisteredForVoting = await db.isUserRegisteredForProposal(proposalId, interaction.user.id);
+    if (!isRegisteredForVoting) {
+      await interaction.editReply({ content: "❌ Вы не зарегистрированы для голосования по этому законопроекту." });
       return;
     }
     
