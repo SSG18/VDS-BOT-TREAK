@@ -613,11 +613,11 @@ async function setChamberMembers(interaction) {
   try {
     await db.setChamberTotalMembers(chamber, count);
     
-    // Update quorum for existing open meetings - ОБНОВЛЕННЫЙ РАСЧЕТ КВОРУМА
+    // Update quorum for existing open meetings
     const openMeetings = await db.getOpenMeetings();
     for (const meeting of openMeetings) {
       if (meeting.chamber === chamber) {
-        const newQuorum = Math.ceil(count / 3); // 1/3 от нового числа
+        const newQuorum = Math.ceil(count / 3);
         await db.updateMeeting(meeting.id, { 
           totalMembers: count,
           quorum: newQuorum 
@@ -1202,6 +1202,11 @@ async function handleButton(interaction) {
       return;
     }
 
+    if (cid.startsWith("start_quantitative_runoff_")) {
+    await handleStartQuantitativeRunoffButton(interaction);
+    return; 
+    }
+    
     if (cid.startsWith("start_meeting_")) {
       await handleStartMeetingButton(interaction);
       return;
@@ -1635,7 +1640,13 @@ async function startMeetingTicker(meetingId) {
         await msg.edit({ content: null, embeds: [embed] });
       }
     } catch (e) {
-      console.error("❌ Update meeting message failed:", e);
+      if (e.code === 10008) { // Unknown Message
+        console.log(`ℹ️ Meeting message not found for meeting ${meetingId}, stopping timer`);
+        clearInterval(meetingTimers.get(meetingId));
+        meetingTimers.delete(meetingId);
+      } else {
+        console.error("❌ Update meeting message failed:", e);
+      }
     }
   };
 
@@ -2061,6 +2072,25 @@ async function handleStartVoteModal(interaction) {
 
   try {
     const thread = await client.channels.fetch(proposal.threadid);
+    
+    // Убираем кнопки "Начать голосование" и "Регистрация вне срока" из сообщения регистрации
+    const registrationMessages = await thread.messages.fetch({ limit: 50 });
+    for (const [msgId, message] of registrationMessages) {
+      if (message.components.length > 0) {
+        const hasVotingButton = message.components.some(row => 
+          row.components.some(component => 
+            component.customId === `start_voting_${pid}` || 
+            component.customId === `delayed_registration_${pid}`
+          )
+        );
+        
+        if (hasVotingButton) {
+          await message.edit({ components: [] });
+          break;
+        }
+      }
+    }
+
     const timeText = ms > 0 ? 
       `🕐 **Начало:** ${formatMoscowTime(Number(voting.startedat))}\n⏰ **Завершение:** ${formatMoscowTime(voting.expiresAt)}` :
       `🕐 **Начало:** ${formatMoscowTime(Number(voting.startedat))}\n⏰ **Завершение:** До ручного завершения`;
@@ -2077,10 +2107,14 @@ async function handleStartVoteModal(interaction) {
           voteRows.push(currentRow);
           currentRow = new ActionRowBuilder();
         }
+        
+        // Обрезаем текст пункта до 80 символов для метки кнопки
+        const buttonLabel = item.text.length > 80 ? item.text.substring(0, 77) + '...' : item.text;
+        
         currentRow.addComponents(
           new ButtonBuilder()
             .setCustomId(`vote_item_${item.itemindex}_${pid}`)
-            .setLabel(`Пункт ${item.itemindex}`)
+            .setLabel(`${item.itemindex}. ${buttonLabel}`)
             .setStyle(ButtonStyle.Primary)
         );
       });
@@ -2857,13 +2891,56 @@ async function handleDelayedRegistrationButton(interaction) {
   try {
     const channel = await client.channels.fetch(DELAYED_REGISTRATION_CHANNEL_ID);
     
+    // Получаем всех пользователей гильдии
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const allMembers = await guild.members.fetch();
+    
+    // Определяем роли для палаты
+    const chamberRoles = {
+      'sf': [ROLES.SENATOR, ROLES.SENATOR_NO_VOTE],
+      'gd_rublevka': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.RUBLEVKA],
+      'gd_arbat': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.ARBAT],
+      'gd_patricki': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.PATRICKI],
+      'gd_tverskoy': [ROLES.DEPUTY, ROLES.DEPUTY_NO_VOTE, ROLES.TVERSKOY]
+    };
+    
+    const requiredRoles = chamberRoles[proposal.chamber] || [];
+    
+    // Фильтруем пользователей, которые принадлежат к палате и еще не зарегистрированы
+    const proposalRegistrations = await db.getProposalRegistrations(proposalId);
+    const registeredUserIds = proposalRegistrations.map(r => r.userid);
+    
+    const availableUsers = [];
+    
+    for (const [memberId, guildMember] of allMembers) {
+      // Проверяем, что пользователь имеет хотя бы одну из требуемых ролей
+      const hasRequiredRole = requiredRoles.some(roleId => guildMember.roles.cache.has(roleId));
+      
+      if (hasRequiredRole && !registeredUserIds.includes(memberId)) {
+        availableUsers.push({
+          userId: memberId,
+          username: guildMember.user.username,
+          displayName: guildMember.displayName
+        });
+      }
+    }
+    
+    if (availableUsers.length === 0) {
+      await interaction.reply({ 
+        content: "❌ Нет доступных пользователей для регистрации вне срока.", 
+        flags: 64 
+      });
+      return;
+    }
+    
     const embed = new EmbedBuilder()
       .setTitle(`⏰ Отсроченная регистрация — ${proposal.number}`)
       .setDescription(`Требуется регистрация пользователя для голосования по законопроекту вне установленного срока.`)
       .addFields(
         { name: "📝 Наименование", value: proposal.name, inline: false },
         { name: "🏛️ Палата", value: CHAMBER_NAMES[proposal.chamber], inline: true },
-        { name: "👤 Запросил", value: `<@${interaction.user.id}>`, inline: true }
+        { name: "👤 Запросил", value: `<@${interaction.user.id}>`, inline: true },
+        { name: "👥 Доступно пользователей", value: String(availableUsers.length), inline: true }
       )
       .setColor(COLORS.WARNING)
       .setFooter({ text: FOOTER })
@@ -2875,28 +2952,14 @@ async function handleDelayedRegistrationButton(interaction) {
       .setMinValues(1)
       .setMaxValues(1);
     
-    // Получаем список пользователей, которые зарегистрированы на заседание но не зарегистрированы для голосования
-    const lastMeeting = await db.getLastMeetingByChamber(proposal.chamber);
-    if (lastMeeting && lastMeeting.open) {
-      const meetingRegistrations = await db.getMeetingRegistrations(lastMeeting.id);
-      const proposalRegistrations = await db.getProposalRegistrations(proposalId);
-      
-      const registeredUserIds = proposalRegistrations.map(r => r.userid);
-      const availableUsers = meetingRegistrations.filter(r => !registeredUserIds.includes(r.userid));
-      
-      for (const reg of availableUsers.slice(0, 25)) {
-        try {
-          const user = await client.users.fetch(reg.userid);
-          selectMenu.addOptions(
-            new StringSelectMenuOptionBuilder()
-              .setLabel(user.username)
-              .setValue(reg.userid)
-              .setDescription(`Зарегистрировать для голосования`)
-          );
-        } catch (error) {
-          // Пропускаем пользователя, если не удалось получить данные
-        }
-      }
+    // Добавляем пользователей в выпадающий список (максимум 25)
+    for (const user of availableUsers.slice(0, 25)) {
+      selectMenu.addOptions(
+        new StringSelectMenuOptionBuilder()
+          .setLabel(user.displayName || user.username)
+          .setValue(user.userId)
+          .setDescription(`Зарегистрировать для голосования`)
+      );
     }
     
     const row = new ActionRowBuilder().addComponents(selectMenu);
@@ -2939,6 +3002,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     
     try {
+      // Проверяем, что пользователь еще не зарегистрирован
+      const isAlreadyRegistered = await db.isUserRegisteredForProposal(proposalId, userId);
+      if (isAlreadyRegistered) {
+        await interaction.reply({ content: "❌ Этот пользователь уже зарегистрирован для голосования.", flags: 64 });
+        return;
+      }
+      
       await db.registerForProposalVoting(proposalId, userId);
       
       const user = await client.users.fetch(userId);
@@ -3602,13 +3672,9 @@ async function finalizeQuantitativeVote(proposalId) {
     resultEmoji = "✅";
     tagId = FORUM_TAGS.APPROVED;
   } else {
-    resultText = "Принято несколько пунктов";
-    resultColor = COLORS.SUCCESS;
-    resultEmoji = "✅";
-    tagId = FORUM_TAGS.APPROVED;
-    
-    await startQuantitativeRunoff(proposalId, winningItems);
-    return;
+    resultText = "Принято несколько пунктов - требуется второй тур";
+    resultColor = COLORS.WARNING;
+    resultEmoji = "⚡";
   }
 
   const embed = new EmbedBuilder()
@@ -3636,26 +3702,31 @@ async function finalizeQuantitativeVote(proposalId) {
     });
   }
 
-  if (winningItems.length > 0) {
-    embed.addFields({
-      name: "🎯 Победившие пункты",
-      value: winningItems.map(item => `**Пункт ${item.index}:** ${item.text} (${item.votes} голосов)`).join('\n'),
-      inline: false
-    });
-  }
-
   try {
     const thread = await client.channels.fetch(proposal.threadid);
     
+    let components = [];
+    
+    if (winningItems.length > 1) {
+      // Если несколько пунктов набрали большинство, показываем кнопку для запуска второго тура
+      const actionRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`start_quantitative_runoff_${proposalId}`)
+          .setLabel("⚡ Начать второй тур")
+          .setStyle(ButtonStyle.Primary)
+      );
+      components = [actionRow];
+    }
+
     if (voting?.messageid) {
       try {
         const voteMsg = await thread.messages.fetch(voting.messageid);
-        await voteMsg.edit({ content: null, embeds: [embed], components: [] });
+        await voteMsg.edit({ content: null, embeds: [embed], components });
       } catch (e) {
-        await thread.send({ embeds: [embed] });
+        await thread.send({ embeds: [embed], components });
       }
     } else {
-      await thread.send({ embeds: [embed] });
+      await thread.send({ embeds: [embed], components });
     }
 
     if (winningItems.length <= 1) {
