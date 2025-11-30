@@ -739,7 +739,6 @@ async function addProposalEvent(proposalId, event) {
 async function createMeetingWithAgenda(interaction, chamber, title, meetingDate, selectedProposals) {
   const id = nanoid(8);
   
-  // Calculate quorum (1/3 of total members) - ОБНОВЛЕННЫЙ РАСЧЕТ
   const totalMembers = await getChamberTotalMembers(chamber);
   const quorum = Math.ceil(totalMembers / 3);
   
@@ -784,7 +783,6 @@ async function createMeetingWithAgenda(interaction, chamber, title, meetingDate,
       });
     } catch (error) {
       console.error(`❌ Error adding proposal ${proposalId} to agenda:`, error.message);
-      // Продолжаем с другими законопроектами даже если один не удалось добавить
     }
   }
 
@@ -1198,7 +1196,6 @@ async function handleMeetingDetailsModal(interaction) {
     if (agenda.length > 0) {
       agendaText = '**📋 Повестка дня:**\n';
       for (const proposal of agenda) {
-        // Используем прямую ссылку на ветку
         const threadLink = `https://discord.com/channels/${GUILD_ID}/${proposal.threadid}`;
         agendaText += `• [${proposal.number}](${threadLink}) - ${proposal.name}\n`;
       }
@@ -1886,6 +1883,19 @@ async function startMeetingTicker(meetingId) {
         const isQuorumMet = registeredCount >= quorum;
         const quorumStatus = isQuorumMet ? "✅ Кворум собран" : "❌ Кворум не собран";
         
+        // ДОБАВЛЯЕМ ПОВЕСТКУ В СООБЩЕНИЕ
+        const agenda = await db.getAgenda(meetingId);
+        let agendaText = '';
+        if (agenda.length > 0) {
+          agendaText = '**📋 Повестка дня:**\n';
+          for (const proposal of agenda) {
+            const threadLink = `https://discord.com/channels/${GUILD_ID}/${proposal.threadid}`;
+            agendaText += `• [${proposal.number}](${threadLink}) - ${proposal.name}\n`;
+          }
+        } else {
+          agendaText = '*Повестка не сформирована*';
+        }
+        
         const finalEmbed = new EmbedBuilder()
           .setTitle(`📋 Фиксация присутствующих завершена`)
           .setDescription(`**${meeting.title}**`)
@@ -1893,10 +1903,12 @@ async function startMeetingTicker(meetingId) {
             { name: "👥 Количество присутствующих", value: String(registeredCount), inline: true },
             { name: "📊 Требуемый кворум", value: String(quorum), inline: true },
             { name: "📈 Статус кворума", value: quorumStatus, inline: true },
-            { name: "👥 Общее количество членов", value: String(totalMembers), inline: true },
+            { name: "👥 Общее количество", value: String(totalMembers), inline: true },
             { name: "⏱️ Время фиксации", value: formatTimeLeft(meeting.durationms), inline: true },
             { name: "🕐 Начало фиксации", value: formatMoscowTime(Number(meeting.createdat)), inline: false },
-            { name: "📝 Список присутствующих", value: listText, inline: false }
+            { name: "📝 Список присутствующих", value: listText, inline: false },
+            // ДОБАВЛЯЕМ ПОВЕСТКУ
+            { name: "📜 Повестка", value: agendaText, inline: false }
           )
           .setColor(isQuorumMet ? COLORS.SUCCESS : COLORS.DANGER)
           .setFooter({ text: FOOTER })
@@ -1911,7 +1923,6 @@ async function startMeetingTicker(meetingId) {
           
         await msg.edit({ content: null, embeds: [finalEmbed], components: [buttonsRow] });
         
-        const agenda = await db.getAgenda(meetingId);
         for (const proposal of agenda) {
           await updateVoteButtonStatus(proposal.id);
         }
@@ -3279,6 +3290,26 @@ async function handleDelayedApprove(interaction) {
     const isAlreadyRegistered = await db.isUserRegisteredForProposal(proposalId, userId);
     if (isAlreadyRegistered) {
       await interaction.editReply({ content: "❌ Этот пользователь уже зарегистрирован для голосования." });
+      
+      // Обновляем сообщение с информацией о том, что пользователь уже зарегистрирован
+      const embed = new EmbedBuilder()
+        .setTitle(`ℹ️ Пользователь уже зарегистрирован — ${proposal.number}`)
+        .setDescription(`Пользователь <@${userId}> уже был зарегистрирован для голосования ранее.`)
+        .addFields(
+          { name: "📝 Законопроект", value: proposal.name, inline: false },
+          { name: "🏛️ Палата", value: CHAMBER_NAMES[proposal.chamber], inline: true },
+          { name: "👤 Пользователь", value: `<@${userId}>`, inline: true },
+          { name: "👨‍💼 Проверил", value: `<@${interaction.user.id}>`, inline: true }
+        )
+        .setColor(COLORS.INFO)
+        .setFooter({ text: FOOTER })
+        .setTimestamp();
+      
+      await interaction.message.edit({ 
+        embeds: [embed], 
+        components: [] 
+      });
+      
       return;
     }
     
@@ -4140,8 +4171,11 @@ async function finalizeQuantitativeVote(proposalId) {
   
   const totalVoted = voters.size;
   
+  // ДОБАВЛЯЕМ СТАТИСТИКУ НЕ ПРОГОЛОСОВАВШИХ И ЯВКУ
   const voteQuorum = lastMeeting ? lastMeeting.quorum : 1;
   const totalMembers = lastMeeting ? lastMeeting.totalmembers : await getChamberTotalMembers(proposal.chamber);
+  const notVoted = Math.max(0, totalMembers - totalVoted);
+  const turnoutPercentage = totalMembers > 0 ? Math.round((totalVoted / totalMembers) * 100) : 0;
   
   const isQuorumMet = totalVoted >= voteQuorum;
   
@@ -4173,9 +4207,13 @@ async function finalizeQuantitativeVote(proposalId) {
     resultEmoji = "✅";
     tagId = FORUM_TAGS.APPROVED;
   } else {
-    resultText = "Принято несколько пунктов - требуется второй тур";
-    resultColor = COLORS.WARNING;
-    resultEmoji = "⚡";
+    resultText = "Принято несколько пунктов";
+    resultColor = COLORS.SUCCESS;
+    resultEmoji = "✅";
+    tagId = FORUM_TAGS.APPROVED;
+    
+    await startQuantitativeRunoff(proposalId, winningItems);
+    return;
   }
 
   const embed = new EmbedBuilder()
@@ -4185,7 +4223,11 @@ async function finalizeQuantitativeVote(proposalId) {
       { name: "📊 Всего проголосовало", value: String(totalVoted), inline: true },
       { name: "📋 Требуемый кворум", value: `${voteQuorum} голосов`, inline: true },
       { name: "📈 Статус кворума", value: isQuorumMet ? "✅ Собран" : "❌ Не собран", inline: true },
-      { name: "⚪ Воздержалось", value: String(abstainCount), inline: true }
+      { name: "⚪ Воздержалось", value: String(abstainCount), inline: true },
+      // ДОБАВЛЯЕМ НОВЫЕ ПОЛЯ
+      { name: "👥 Общее количество", value: String(totalMembers), inline: true },
+      { name: "❓ Не голосовало", value: String(notVoted), inline: true },
+      { name: "📈 Явка", value: `${turnoutPercentage}%`, inline: true }
     )
     .setColor(resultColor)
     .setFooter({ text: FOOTER })
@@ -4203,31 +4245,26 @@ async function finalizeQuantitativeVote(proposalId) {
     });
   }
 
+  if (winningItems.length > 0) {
+    embed.addFields({
+      name: "🎯 Победившие пункты",
+      value: winningItems.map(item => `**Пункт ${item.index}:** ${item.text} (${item.votes} голосов)`).join('\n'),
+      inline: false
+    });
+  }
+
   try {
     const thread = await client.channels.fetch(proposal.threadid);
     
-    let components = [];
-    
-    if (winningItems.length > 1) {
-      // Если несколько пунктов набрали большинство, показываем кнопку для запуска второго тура
-      const actionRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`start_quantitative_runoff_${proposalId}`)
-          .setLabel("⚡ Начать второй тур")
-          .setStyle(ButtonStyle.Primary)
-      );
-      components = [actionRow];
-    }
-
     if (voting?.messageid) {
       try {
         const voteMsg = await thread.messages.fetch(voting.messageid);
-        await voteMsg.edit({ content: null, embeds: [embed], components });
+        await voteMsg.edit({ content: null, embeds: [embed], components: [] });
       } catch (e) {
-        await thread.send({ embeds: [embed], components });
+        await thread.send({ embeds: [embed] });
       }
     } else {
-      await thread.send({ embeds: [embed], components });
+      await thread.send({ embeds: [embed] });
     }
 
     if (winningItems.length <= 1) {
