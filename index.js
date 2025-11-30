@@ -4665,6 +4665,7 @@ async function finalizeQuantitativeRunoff(proposalId) {
   const voters = new Set();
   let abstainCount = 0;
   
+  // Собираем статистику по голосам
   votes.forEach(vote => {
     voters.add(vote.userid);
     if (vote.votetype.startsWith('item_')) {
@@ -4677,8 +4678,19 @@ async function finalizeQuantitativeRunoff(proposalId) {
   
   const totalVoted = voters.size;
   
+  const voteQuorum = lastMeeting ? lastMeeting.quorum : 1;
+  const totalMembers = lastMeeting ? lastMeeting.totalmembers : await getChamberTotalMembers(proposal.chamber);
+  const isQuorumMet = totalVoted >= voteQuorum;
+  
+  // Расчет не проголосовавших
+  const notVoted = Math.max(0, totalMembers - totalVoted);
+  const registeredCount = lastMeeting ? await db.getRegistrationCount(lastMeeting.id) : 0;
+  const notVotedRegistered = Math.max(0, registeredCount - totalVoted);
+  
+  // Определяем победителя
   let winner = null;
   let maxVotes = 0;
+  let isTie = false;
   
   for (const [itemIndex, voteCount] of Object.entries(itemVotes)) {
     if (voteCount > maxVotes) {
@@ -4688,20 +4700,98 @@ async function finalizeQuantitativeRunoff(proposalId) {
         votes: voteCount,
         text: items.find(item => item.itemindex === parseInt(itemIndex))?.text || 'Неизвестный пункт'
       };
+      isTie = false;
+    } else if (voteCount === maxVotes && maxVotes > 0) {
+      isTie = true;
     }
   }
   
-  const resultText = winner ? `Принят пункт ${winner.index}` : "Ни один пункт не выбран";
-  const resultColor = winner ? COLORS.SUCCESS : COLORS.DANGER;
-  const resultEmoji = winner ? "✅" : "❌";
-  const tagId = winner ? FORUM_TAGS.APPROVED : FORUM_TAGS.NOT_APPROVED;
+  // Проверяем формулу для определения прохождения
+  const { requiredFor, requiredTotal, isPassed } = calculateVoteResult(
+    winner ? winner.votes : 0, 
+    0, 
+    abstainCount, 
+    voting?.formula || '0', 
+    totalMembers
+  );
+  
+  let resultText = "Не принято";
+  let resultColor = COLORS.SECONDARY;
+  let resultEmoji = "❌";
+  let tagId = FORUM_TAGS.NOT_APPROVED;
+  
+  if (!isQuorumMet) {
+    resultText = "Не принято (кворум не собран)";
+  } else if (isTie) {
+    resultText = "Голоса разделились поровну";
+    resultColor = COLORS.WARNING;
+    resultEmoji = "⚖️";
+  } else if (winner && isPassed) {
+    resultText = `Принят пункт ${winner.index}`;
+    resultColor = COLORS.SUCCESS;
+    resultEmoji = "✅";
+    tagId = FORUM_TAGS.APPROVED;
+  } else {
+    resultText = "Не принято";
+  }
 
+  // Получаем все голоса для поименного списка (если голосование открытое)
+  const allVotes = voting.isSecret ? [] : await db.getVotes(proposalId, 2);
+  let listParts = [];
+  
+  if (!voting.isSecret) {
+    for (const vote of allVotes) {
+      try {
+        const user = await client.users.fetch(vote.userid);
+        let voteTypeText = '';
+        let emoji = '⚪';
+        
+        if (vote.votetype.startsWith('item_')) {
+          const itemIndex = vote.votetype.split('_')[1];
+          voteTypeText = `Пункт ${itemIndex}`;
+          emoji = `🔘${itemIndex}`;
+        } else if (vote.votetype === 'abstain') {
+          voteTypeText = 'Воздержался';
+          emoji = '⚪';
+        }
+        
+        listParts.push(`${emoji} <@${vote.userid}> (${user.username}) - ${voteTypeText}`);
+      } catch (error) {
+        // Если не удалось получить данные пользователя
+        let voteTypeText = '';
+        let emoji = '⚪';
+        
+        if (vote.votetype.startsWith('item_')) {
+          const itemIndex = vote.votetype.split('_')[1];
+          voteTypeText = `Пункт ${itemIndex}`;
+          emoji = `🔘${itemIndex}`;
+        } else if (vote.votetype === 'abstain') {
+          voteTypeText = 'Воздержался';
+          emoji = '⚪';
+        }
+        
+        listParts.push(`${emoji} <@${vote.userid}> - ${voteTypeText}`);
+      }
+    }
+  }
+  
+  const listText = listParts.length ? listParts.join("\n") : (voting.isSecret ? "Голосование было тайным" : "Нет голосов");
+
+  // Создаем развернутый embed как в первом туре
   const embed = new EmbedBuilder()
-    .setTitle(`📊 Результаты второго тура — ${proposal.number}`)
+    .setTitle(`📊 Результаты второго тура рейтингового голосования — ${proposal.number}`)
     .setDescription(`## ${resultEmoji} ${resultText}`)
     .addFields(
       { name: "📊 Всего проголосовало", value: String(totalVoted), inline: true },
-      { name: "⚪ Воздержалось", value: String(abstainCount), inline: true }
+      { name: "📋 Требуемый кворум", value: `${voteQuorum} голосов`, inline: true },
+      { name: "📈 Статус кворума", value: isQuorumMet ? "✅ Собран" : "❌ Не собран", inline: true },
+      { name: "👥 Общее количество", value: String(totalMembers), inline: true },
+      { name: "❓ Не голосовало", value: `${notVoted} (из них ${notVotedRegistered} зарегистрированных)`, inline: true },
+      { name: "📈 Явка", value: `${Math.round((totalVoted / totalMembers) * 100)}%`, inline: true },
+      { name: "⚪ Воздержалось", value: String(abstainCount), inline: true },
+      { name: "📈 Требуется голосов", value: `${requiredFor}/${requiredTotal}`, inline: true },
+      { name: "🔒 Тип голосования", value: voting.isSecret ? "Тайное" : "Открытое", inline: true },
+      { name: "📋 Формула", value: getFormulaDescription(voting.formula), inline: true }
     )
     .setColor(resultColor)
     .setTimestamp();
@@ -4710,65 +4800,104 @@ async function finalizeQuantitativeRunoff(proposalId) {
     embed.setFooter({ text: FOOTER });
   }
 
-  if (winner) {
+  // Добавляем информацию о победителе
+  if (winner && !isTie) {
     embed.addFields({
       name: "🎯 Победивший пункт",
-      value: `**Пункт ${winner.index}:** ${winner.text}\n**Голосов:** ${winner.votes}`,
+      value: `**Пункт ${winner.index}:** ${winner.text}\n**Голосов:** ${winner.votes} (${Math.round((winner.votes / totalVoted) * 100)}%)`,
+      inline: false
+    });
+  } else if (isTie) {
+    embed.addFields({
+      name: "⚖️ Ничья",
+      value: "Несколько пунктов набрали одинаковое количество голосов",
       inline: false
     });
   }
 
+  // Добавляем детальную статистику по всем пунктам
+  let itemsStats = '';
   for (const [itemIndex, voteCount] of Object.entries(itemVotes)) {
     const item = items.find(item => item.itemindex === parseInt(itemIndex));
     const percentage = totalVoted > 0 ? Math.round((voteCount / totalVoted) * 100) : 0;
-    const isWinner = winner && winner.index === parseInt(itemIndex);
+    const isWinner = winner && winner.index === parseInt(itemIndex) && !isTie;
+    const isTied = isTie && voteCount === maxVotes;
     
+    let statusEmoji = '🔘';
+    if (isWinner) statusEmoji = '👑';
+    else if (isTied) statusEmoji = '⚖️';
+    
+    itemsStats += `${statusEmoji} **Пункт ${itemIndex}:** ${voteCount} голосов (${percentage}%)\n`;
+    itemsStats += `   ${item.text}\n\n`;
+  }
+  
+  if (itemsStats) {
     embed.addFields({
-      name: `Пункт ${itemIndex} ${isWinner ? '👑' : ''}`,
-      value: `${item.text}\nГолосов: ${voteCount} (${percentage}%)`,
+      name: "📋 Детальная статистика по пунктам",
+      value: itemsStats,
       inline: false
     });
   }
+
+  // Добавляем поимённое голосование если не тайное
+  if (!voting.isSecret) {
+    embed.addFields({ 
+      name: "🗳️ Поимённое голосование", 
+      value: listText.substring(0, 1024), 
+      inline: false 
+    });
+  }
+
+  // Добавляем временные метки
+  embed.addFields(
+    { name: "🕐 Начало", value: voting?.startedat ? formatMoscowTime(Number(voting.startedat)) : "—", inline: true },
+    { name: "🕐 Завершено", value: formatMoscowTime(Date.now()), inline: true }
+  );
 
   try {
     const thread = await client.channels.fetch(proposal.threadid);
     
-    // Отправляем новое сообщение с результатами
-    await thread.send({ embeds: [embed] });
+    // Отправляем новое сообщение с развернутыми результатами
+    const resultsMessage = await thread.send({ embeds: [embed] });
     
-    // Обновляем сообщение голосования, убирая кнопки
-    if (voting?.runoffmessageid) {
-      try {
-        const runoffMsg = await thread.messages.fetch(voting.runoffmessageid);
-        await runoffMsg.edit({ components: [] });
-      } catch (e) {
-        // Если не удалось обновить, игнорируем
+    // Если ничья, отправляем сообщение для решающего голоса председателя
+    if (isTie) {
+      await sendTieBreakerMessage(proposalId, winner ? winner.votes : 0, 0, abstainCount);
+    } else {
+      // Обновляем сообщение голосования, убирая кнопки
+      if (voting?.runoffmessageid) {
+        try {
+          const runoffMsg = await thread.messages.fetch(voting.runoffmessageid);
+          await runoffMsg.edit({ components: [] });
+        } catch (e) {
+          // Если не удалось обновить, игнорируем
+        }
       }
-    }
 
-    await db.endVoting(proposalId, Date.now());
-    await db.updateProposalStatus(proposalId, resultText);
-    
-    const events = proposal.events || [];
-    events.push({
-      type: 'vote_result',
-      result: resultText,
-      timestamp: Date.now(),
-      chamber: proposal.chamber,
-      description: `Второй тур рейтингового голосования в ${CHAMBER_NAMES[proposal.chamber]} завершено. ${resultText}`
-    });
-    await db.updateProposalEvents(proposalId, events);
-    
-    await updateHistoryMessage(proposalId);
-    
-    if (voteTimers.has(proposalId)) {
-      clearInterval(voteTimers.get(proposalId));
-      voteTimers.delete(proposalId);
+      await db.endVoting(proposalId, Date.now());
+      await db.updateProposalStatus(proposalId, resultText);
+      
+      const events = proposal.events || [];
+      events.push({
+        type: 'vote_result',
+        result: resultText,
+        timestamp: Date.now(),
+        chamber: proposal.chamber,
+        description: `Второй тур рейтингового голосования в ${CHAMBER_NAMES[proposal.chamber]} завершен. Результат: ${resultText}`
+      });
+      await db.updateProposalEvents(proposalId, events);
+      
+      await updateHistoryMessage(proposalId);
+      
+      if (voteTimers.has(proposalId)) {
+        clearInterval(voteTimers.get(proposalId));
+        voteTimers.delete(proposalId);
+      }
+      
+      setTimeout(async () => {
+        await closeThreadWithTag(proposal.threadid, tagId);
+      }, 30000);
     }
-    
-    setTimeout(async () => {
-      await closeThreadWithTag(proposal.threadid, tagId);
-    }, 30000);
     
   } catch (e) {
     console.error("❌ Error publishing runoff results:", e);
