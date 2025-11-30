@@ -60,7 +60,7 @@ const MEETING_MENTION_ROLES = {
   'gd_tverskoy': process.env.GD_TVERSKOY_MENTION_ROLE_ID
 };
 
-const DELAYED_REGISTRATION_CHANNEL_ID = '1444683721868316772';
+const DELAYED_REGISTRATION_CHANNEL_ID = '1441159654284464148';
 
 const ROLES = {
   SENATOR: process.env.SENATOR_ROLE_ID,
@@ -1559,13 +1559,13 @@ async function handleButton(interaction) {
       return;
     }
     if (cid.startsWith("delayed_approve_")) {
-    await handleDelayedApprove(interaction);
-    return;
+      await handleDelayedApprove(interaction);
+      return;
     }
 
     if (cid.startsWith("delayed_deny_")) {
-    await handleDelayedDeny(interaction);
-    return;
+      await handleDelayedDeny(interaction);
+      return;
     }
 
     if (cid.startsWith("clear_roles_")) {
@@ -1573,9 +1573,10 @@ async function handleButton(interaction) {
       return;
     }
 
+    // ДОБАВЛЯЕМ ОБРАБОТКУ КНОПКИ ЗАПУСКА ВТОРОГО ТУРА
     if (cid.startsWith("start_quantitative_runoff_")) {
-    await handleStartQuantitativeRunoffButton(interaction);
-    return; 
+      await handleStartQuantitativeRunoffButton(interaction);
+      return;
     }
     
     if (cid.startsWith("start_meeting_")) {
@@ -1659,6 +1660,150 @@ async function handleButton(interaction) {
     }
   }
 }
+
+async function startQuantitativeRunoff(proposalId, winningItems) {
+  const proposal = await db.getProposal(proposalId);
+  if (!proposal) return;
+
+  const voting = {
+    proposalId: proposalId,
+    open: true,
+    startedAt: Date.now(),
+    durationMs: 300000, // 5 минут
+    expiresAt: Date.now() + 300000,
+    messageId: null,
+    isSecret: false,
+    formula: '0',
+    stage: 2
+  };
+
+  await db.startVoting(voting);
+
+  try {
+    const thread = await client.channels.fetch(proposal.threadid);
+    
+    const embed = new EmbedBuilder()
+      .setTitle(`🗳️ Второй тур рейтингового голосования — ${proposal.number}`)
+      .setDescription(`Несколько пунктов набрали большинство голосов. Во втором туре выберите ОДИН наиболее предпочтительный пункт.`)
+      .setColor(COLORS.INFO)
+      .setTimestamp();
+    
+    if (FOOTER) {
+      embed.setFooter({ text: FOOTER });
+    }
+
+    const voteRows = [];
+    let currentRow = new ActionRowBuilder();
+    
+    winningItems.forEach((item, index) => {
+      if (currentRow.components.length >= 3) {
+        voteRows.push(currentRow);
+        currentRow = new ActionRowBuilder();
+      }
+      currentRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`vote_item_${item.index}_${proposalId}`)
+          .setLabel(`Пункт ${item.index}`)
+          .setStyle(ButtonStyle.Primary)
+      );
+    });
+    
+    if (currentRow.components.length >= 3) {
+      voteRows.push(currentRow);
+      currentRow = new ActionRowBuilder();
+    }
+    currentRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`vote_abstain_${proposalId}`)
+        .setLabel("⚪ Воздержаться")
+        .setStyle(ButtonStyle.Secondary)
+    );
+    
+    if (currentRow.components.length > 0) {
+      voteRows.push(currentRow);
+    }
+    
+    const controlRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`end_vote_${proposalId}`).setLabel("⏹️ Завершить голосование").setStyle(ButtonStyle.Danger)
+    );
+    
+    voteRows.push(controlRow);
+
+    const runoffMsg = await thread.send({ 
+      embeds: [embed], 
+      components: voteRows 
+    });
+
+    voting.runoffMessageId = runoffMsg.id;
+    await db.startVoting(voting);
+
+    await startVoteTicker(proposalId);
+    
+  } catch (e) {
+    console.error("❌ Error starting quantitative runoff:", e);
+  }
+}
+
+async function handleStartQuantitativeRunoffButton(interaction) {
+  const proposalId = interaction.customId.split("start_quantitative_runoff_")[1];
+  const proposal = await db.getProposal(proposalId);
+  
+  if (!proposal) {
+    await interaction.reply({ content: "❌ Законопроект не найден.", flags: 64 });
+    return;
+  }
+  
+  const member = interaction.member;
+  if (!isChamberChairman(member, proposal.chamber) && !isAdmin(member)) {
+    await interaction.reply({ content: "❌ У вас нет прав для запуска второго тура.", flags: 64 });
+    return;
+  }
+  
+  await interaction.deferReply({ flags: 64 });
+  
+  try {
+    // Получаем результаты первого тура для определения пунктов для второго тура
+    const voting = await db.getVoting(proposalId);
+    const items = await db.getQuantitativeItems(proposalId);
+    const votes = await db.getVotes(proposalId);
+    
+    const itemVotes = {};
+    items.forEach(item => {
+      itemVotes[item.itemindex] = 0;
+    });
+    
+    votes.forEach(vote => {
+      if (vote.votetype.startsWith('item_')) {
+        const itemIndex = parseInt(vote.votetype.split('_')[1]);
+        if (itemVotes[itemIndex] !== undefined) {
+          itemVotes[itemIndex]++;
+        }
+      }
+    });
+    
+    // Определяем два лучших пункта
+    const itemsWithVotes = [];
+    for (const [itemIndex, voteCount] of Object.entries(itemVotes)) {
+      itemsWithVotes.push({
+        index: parseInt(itemIndex),
+        votes: voteCount,
+        text: items.find(item => item.itemindex === parseInt(itemIndex))?.text || 'Неизвестный пункт'
+      });
+    }
+    
+    itemsWithVotes.sort((a, b) => b.votes - a.votes);
+    const winningItems = itemsWithVotes.slice(0, 2);
+    
+    await startQuantitativeRunoff(proposalId, winningItems);
+    await interaction.editReply({ content: "✅ Второй тур рейтингового голосования запущен." });
+    
+  } catch (error) {
+    console.error("❌ Error starting quantitative runoff:", error);
+    await interaction.editReply({ content: "❌ Ошибка при запуске второго тура." });
+  }
+}
+
+
 
 async function handleGetCardButton(interaction) {
   const meetingId = interaction.customId.split("get_card_")[1];
