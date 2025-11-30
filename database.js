@@ -282,14 +282,20 @@ for (const chamber of chambers) {
   }
 
   async getVotesAllStages(proposalId) {
-  const result = await this.query(
-    'SELECT * FROM votes WHERE proposalId = $1 ORDER BY stage ASC, createdAt ASC',
-    [proposalId]
-  );
-  return result.rows;
+  try {
+    const result = await this.query(
+      'SELECT * FROM votes WHERE proposalId = $1 ORDER BY stage ASC, createdAt ASC',
+      [proposalId]
+    );
+    return result.rows;
+  } catch (error) {
+    console.error("❌ Error getting votes all stages:", error);
+    return [];
+  }
 }
 
   async getProposalByThreadId(threadId) {
+  try {
     const result = await this.query('SELECT * FROM proposals WHERE threadId = $1', [threadId]);
     if (result.rows.length === 0) return null;
     
@@ -302,7 +308,11 @@ for (const chamber of chambers) {
       proposal.events = [];
     }
     return proposal;
+  } catch (error) {
+    console.error("❌ Error getting proposal by thread ID:", error);
+    return null;
   }
+}
 
   async getVotes(proposalId, stage = 1, limit = 1000) {
     const result = await this.query(
